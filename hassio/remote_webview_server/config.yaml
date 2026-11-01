@@ -1,5 +1,5 @@
 name: "Dashboard OS Server"
-version: "2.9.323"
+version: "2.9.324"
 slug: "remote_webview_server"
 # (02/10/2026) Anh dung san tren ghcr (CI tag = version). Truoc day addon build tai may HA tu build.yaml + Dockerfile,
 # va Supervisor xuat ca anh Docker (~1,1 GB sau nen) vao moi ban sao luu; anh keo ve thi khong. build.yaml/Dockerfile
@@ -103,6 +103,12 @@ options:
   # bac 6. (08/12/2026) MAC DINH false (16 kHz) — phep do tren P4 cho thay loa tieu thu dung 16 kHz; nguyen nhan
   # "dut quang" that su la bo dem nhip phat 2 goi/20 ms (da sua trong src/audioPacer.ts), khong phai tan so lay mau.
   call_rate8k: false
+  # (13/12/2026) CHONG RU (howling) bang HALF-DUPLEX THICH NGHI (voice switch, src/audioDuplex.ts): do nang luong 2
+  # chieu cua tung cuoc goi roi cat 20 dB chieu "man -> dien thoai" khi dien thoai dang noi va cat 12 dB chieu
+  # "dien thoai -> loa man" khi tieng trong phong dang hon (nguong -34 dBFS, hon 6 dB, attack 10 ms / release 250 ms).
+  # Da chan duoc vong lap nen AGC duoc phep to hon: muc nham -14 dBFS, gain toi da +24 dB (truoc la -16 / +12).
+  # false = tat han de A/B tren cung mot cuoc goi (AGC tro ve -16 dBFS / +12 dB).
+  call_halfduplex: true
   # (23/09/2026) /pw-data KHONG nam trong volume ben cua addon — mat het khi
   # container tao lai (moi lan update). /data la thu muc rieng cua addon nay
   # do Supervisor tu cap, LUON ben qua update/restart.
@@ -137,4 +143,6 @@ schema:
   call_stereo: "bool?"
   # (08/12/2026) Thieu khai bao nay thi Supervisor coi `call_rate8k` la option la (khong bat/tat duoc tren giao dien).
   call_rate8k: "bool?"
+  # (13/12/2026) HALF-DUPLEX chong RU (src/audioDuplex.ts) — bat/tat duoc tren giao dien Cau hinh.
+  call_halfduplex: "bool?"
   user_data_dir: str

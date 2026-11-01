@@ -75,6 +75,10 @@ export CCR_CALL_STEREO="$(get_opt call_stereo "true")"
 # (08/12/2026) MAC DINH FALSE (16 kHz): phep do tren P4 cho thay loa tieu thu dung 16 kHz — ha mau 8 kHz chi la
 # gia thuyet sai (ly do that cua "dut quang" la bo dem nhip phat 2 goi/20 ms, da sua trong src/audioPacer.ts).
 export CCR_CALL_RATE8K="$(get_opt call_rate8k "false")"
+# (13/12/2026) HALF-DUPLEX thich nghi chong RU (src/audioDuplex.ts): cat 20 dB chieu man -> dien thoai khi dien thoai
+# dang noi, cat 12 dB chieu dien thoai -> loa man khi tieng trong phong dang hon. 'false' -> tat (A/B).
+# Kem theo: khi BAT, AGC dung muc nham -14 dBFS / gain toi da +24 dB (thay vi -16 / +12).
+export CCR_CALL_HALFDUPLEX="$(get_opt call_halfduplex "true")"
 # (27/09/2026) Link album Google Photos chia se cho khung anh (chinh duoc ca o Cai dat tren man hinh).
 export GPHOTOS_ALBUM="$(get_opt gphotos_album "")"
 export USER_DATA_DIR="$(get_opt user_data_dir "/data/pw-data")"

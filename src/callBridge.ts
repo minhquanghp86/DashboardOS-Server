@@ -24,12 +24,19 @@
 //                                      (07/12/2026) `CCR_CALL_RATE8K=1` -> ha mau 16 kHz -> 8 kHz (loc 3,4 kHz roi bo mau
 //                                      x2, src/audioResample8k.ts): 640 B -> 320 B, van 20 ms/goi (16 KB/s = dung nhip
 //                                      tieu thu cua loa P4). MAC DINH TAT.
+//   (13/12/2026) CHONG RU BANG HALF-DUPLEX THICH NGHI (src/audioDuplex.ts) — env `CCR_CALL_HALFDUPLEX`
+//   (mac dinh BAT, '0' = TAT de A/B): theo doi nang luong 2 chieu cua tung cuoc goi, cat 20 dB chieu `down` (mic man
+//   -> dien thoai) khi dien thoai dang noi va cat 12 dB chieu `up` (dien thoai -> loa man) khi tieng trong phong dang
+//   hon. Da chan duoc vong lap nen AGC duoc phep to hon (target -14 dBFS, gain toi da +24 dB — xem src/audioAgc.ts).
 import fs from 'node:fs';
 import http from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import { newAgcState, processPcm, AGC_ENABLED, AGC_SILENCE_DBFS, peakOf, type AgcState } from './audioAgc.js';
+// (13/12/2026) HALF-DUPLEX thich nghi (voice switch) chong RU: theo doi nang luong 2 chieu cua tung cuoc goi roi giam
+// mot chieu khi chieu kia dang co tieng (`CCR_CALL_HALFDUPLEX=0` de TAT/A-B). Xem src/audioDuplex.ts.
+import { duplex, HALFDUPLEX_ENABLED } from './audioDuplex.js';
 // (05/12/2026) NHIP GUI DEU 20 ms/khung xuong loa man (burst -> tran ring buffer 250 ms cua P4 -> "giat cuc").
 import { FramePacer, type DropReason } from './audioPacer.js';
 // (06/12/2026) MONO -> STEREO (L = R) cho nhanh xuong LOA MAN: mixer cua P4 khai 2 kenh nen 640 B mono chi la
@@ -240,6 +247,7 @@ export function endCall(dev: string): void {
   agc.delete(dev);
   eqs.delete(dev);
   resamplers.delete(dev);                  // (07/12/2026) bo trang thai loc 8 kHz cua man nay
+  duplex.forget(dev);                      // (13/12/2026) bo trang thai half-duplex (muc do 2 chieu) cua cuoc goi
   framePacer.forget(dev);                  // (05/12/2026) bo khung con lai + hen gio cua man nay
   forgetPacerSrc(dev);                     // (09/12/2026) bo nhan nguon cua bo dem nhip
   drops.delete(dev);
@@ -259,12 +267,18 @@ export function onMicFrame(dev: string, buf: Buffer): void {
   if (leg.lastSeq >= 0) leg.lost += (seq - leg.lastSeq - 1 + 65536) % 65536;
   leg.lastSeq = seq;
   leg.micFrames++;
-  const pcm = buf.subarray(4);
   const at = Date.now();
+  const raw = buf.subarray(4);
+  // (13/12/2026) HALF-DUPLEX: chieu `down` = P4 -> DIEN THOAI (mic cua man). Khi dau day (`up`) dang noi va hon han
+  // tieng trong phong thi cat 20 dB — chan vong loa P4 -> mic P4 -> ve dien thoai (nguoi goi khong nghe lai giong
+  // minh). Do dai goi KHONG doi. `duplex.apply` tra nguyen buffer khi khong phai cat / khi TAT bang env.
+  const pcm = duplex.apply(dev, 'down', raw);
   for (const p of leg.peers) if (p.readyState === WebSocket.OPEN && p.bufferedAmount < 64 * 1024) p.send(pcm);
   // (09/12/2026) KHONG BAO GIO gui mic cua mot man ve CHINH loa cua no (`leg.link !== dev`): mot self-link (du lieu
   // hong / goi tu chinh no) truoc day tao vong echo mic -> loa -> mic -> ... tren cung mot thiet bi.
-  if (leg.link && leg.link !== dev && !leg.muted && calls.has(leg.link)) sendToSpeaker(leg.link, pcm);
+  // (13/12/2026) Nhanh man <-> man (chuong cong) di `raw`: day khong phai chieu "P4 -> dien thoai" nen khong qua
+  // voice switch (cat loi noi cua nguoi dung trong nha la vo nghia voi mot cap thiet bi cung phong).
+  if (leg.link && leg.link !== dev && !leg.muted && calls.has(leg.link)) sendToSpeaker(leg.link, raw);
   for (const f of leg.listeners) f(pcm, at);
 }
 
@@ -369,10 +383,17 @@ export function applyGainDb(pcm: Buffer, gainDb: number): Buffer {
  *     `gain` = gain hien tai (src/audioMeter.ts in ra mot dong log moi 2 s cho moi man dang trong cuoc goi).
  *   - (05/12/2026) `opts` cho phep GHI DE tung lan goi (bo phat thu nghiem A/B khong can khoi dong lai add-on):
  *     `{agc, eq, gainDb}` — khong co gi thi lay theo env nhu cu.
+ *   - (13/12/2026) SAU AGC/limiter co HALF-DUPLEX (`duplex.apply(dev,'up',...)`, src/audioDuplex.ts): khi mic cua
+ *     man (chieu `down`) dang hon tieng dien thoai >= 6 dB thi chieu xuong loa bi giam 12 dB — cat vong RU
+ *     loa P4 -> mic dien thoai -> ve loa P4. `CCR_CALL_HALFDUPLEX=0` -> passthrough y nguyen byte (A/B).
  */
 export function sendToSpeaker(dev: string, pcm: Buffer, opts?: SpeakerOpts): void {
   const m = meterOf(dev);                                   // null = man nay khong trong cuoc goi -> khong do
-  const inDb = m ? db(rms(pcm)) : 0;
+  const inRms = rms(pcm);
+  const inDb = m ? db(inRms) : 0;
+  // (13/12/2026) Muc THO (truoc EQ/AGC) cua khung nay = so do cua chieu `up` cho bo HALF-DUPLEX. Phai do TRUOC AGC:
+  // sau AGC moi tieng (ke ca nhieu nen phong cua dien thoai) deu bi keo ve ~-14 dBFS nen se luon "vuot nguong".
+  const rawLevelDb = 20 * Math.log10(Math.max(inRms, 1e-9));
   const eqOn = opts?.eq ?? EQ_ENABLED;
   const agcOn = opts?.agc ?? AGC_ENABLED;
   const extraDb = opts?.gainDb ?? 0;
@@ -390,6 +411,11 @@ export function sendToSpeaker(dev: string, pcm: Buffer, opts?: SpeakerOpts): voi
     out = processPcm(out, st);
     gainDb = st.gainDb;
   }                                                         // AGC tat -> passthrough y nguyen byte (A/B)
+  // (13/12/2026) HALF-DUPLEX cho chieu `up` (dien thoai -> P4 = tin hieu di ra loa man): dat SAU AGC/limiter, vi dat
+  // truoc thi AGC (muc nham -14 dBFS, gain toi da +24 dB) se keo phan vua bi cat len lai -> vong lap van kin. Do nang
+  // luong thi van lay muc THO (`rawLevelDb`) nen bo phat hien khong bi AGC lam "gia to".
+  // Do dai goi khong doi; khong phai cat -> `duplex.apply` tra nguyen buffer (`out`).
+  out = duplex.apply(dev, 'up', out, rawLevelDb);
   // (06/12/2026) MONO -> STEREO SAU AGC, TRUOC bo dem nhip: moi mau lap 2 lan (L = R), 640 B -> 1280 B, do dai
   // THOI GIAN khong doi (van 20 ms). Ly do: mixer cua P4 khai 2 kenh — 640 B mono chi la 10 ms stereo nen buffer
   // loa luon day va bi vut. `CCR_CALL_STEREO=0` -> gui mono nhu cu (A/B). Chi nhanh xuong MAN di qua day.
@@ -526,6 +552,8 @@ export interface TestPlayResult {
   rate: number;
   /** (07/12/2026) `CCR_CALL_RATE8K=1`? (ha mau 16 kHz -> 8 kHz truoc khi gui — xem src/audioResample8k.ts). */
   rate8k: boolean;
+  /** (13/12/2026) `CCR_CALL_HALFDUPLEX` co BAT khong (voice switch chong RU — xem src/audioDuplex.ts). */
+  halfduplex: boolean;
   /** So nhip bi tre qua muc bu (event loop cua server bi chan) — "giat do server". */
   late: number;
 }
@@ -565,6 +593,9 @@ export async function playTestAudio(o: TestPlayOptions): Promise<TestPlayResult>
   agc.delete(o.dev);                       // gain bat dau tu 0 (khong keo gain cu cua cuoc goi truoc)
   eqs.delete(o.dev);                       // trang thai EQ sach
   resamplers.delete(o.dev);                // (07/12/2026) trang thai loc 8 kHz sach (bat dau tu im lang)
+  // (13/12/2026) trang thai half-duplex sach: phep do phat tep CO DINH, khong duoc de muc do cua cuoc goi truoc
+  // (hoac cua mic man dang mo) cat bot tep mau — so lieu A/B phai sach.
+  duplex.forget(o.dev);
   drops.delete(o.dev);
   // (09/12/2026) SUA LOI "49 KB/s trong khi le ra 32 KB/s": phep do phat tep mau qua `sendToSpeaker()` (32 KB/s) NHUNG
   // khong mo call record, nen `callHold` khong co `dev` -> src/audioCapture.ts van bom them tieng Chrome/PulseAudio
@@ -592,11 +623,11 @@ export async function playTestAudio(o: TestPlayOptions): Promise<TestPlayResult>
     console.log(`[test] play dev=${o.dev} file=${name} frames=${st.frames} dropped=${st.dropped} ` +
       `loop=${loop} agc=${agcOn ? 1 : 0} eq=${eqOn ? 1 : 0} gain=${gainDb} ` +
       `stereo=${STEREO_ENABLED ? 1 : 0} frame=${framePacer.bytesPerFrame} ms=${ms} late=${r.lateTicks} ` +
-      `rate=${SPEAKER_RATE_HZ}`);
+      `rate=${SPEAKER_RATE_HZ} halfduplex=${HALFDUPLEX_ENABLED ? 1 : 0}`);
     return {
       ok: true, dev: o.dev, file: name, frames: st.frames, dropped: st.dropped, ms, loop,
       agc: agcOn, eq: eqOn, gain: gainDb, stereo: STEREO_ENABLED, frameBytes: framePacer.bytesPerFrame, late: r.lateTicks,
-      rate: SPEAKER_RATE_HZ, rate8k: RATE8K_ENABLED,
+      rate: SPEAKER_RATE_HZ, rate8k: RATE8K_ENABLED, halfduplex: HALFDUPLEX_ENABLED,
     };
   } finally {
     playing.delete(o.dev);

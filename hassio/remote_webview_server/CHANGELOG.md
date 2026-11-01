@@ -1,4 +1,34 @@
 ## Sắp tới (chưa bump version)
+- **Chống RÚ (howling) khi gọi điện thoại ↔ P4 bằng HALF-DUPLEX THÍCH NGHI (voice switch) phía server**
+  (`src/audioDuplex.ts` mới). Đo + nghe trên thiết bị: tiếng từ điện thoại xuống loa P4 **nhỏ, không nhạy**; tăng âm
+  lượng loa P4 thì **rú**. Nguyên nhân: **vòng lặp âm học** loa P4 → mic điện thoại → về P4 (và chiều ngược lại
+  P4 → mic P4 → về điện thoại); AEC của trình duyệt chỉ giảm được một phần, và AGC (+gain) lại chính là khuếch đại
+  vòng đó. Nay server đo **năng lượng RMS 2 chiều cho từng cuộc gọi**:
+  `up` = điện thoại → P4 (PCM đi ra loa màn, `sendToSpeaker()`), `down` = P4 → điện thoại (mic màn, `onMicFrame()`),
+  rồi:
+  - `up` > **−34 dBFS** và hơn `down` ≥ **6 dB** ⇒ **giảm `down` 20 dB** (chặn vòng P4 → mic P4 → về điện thoại:
+    người gọi không còn nghe lại chính giọng mình);
+  - `down` > **−34 dBFS** và hơn `up` ≥ **6 dB** ⇒ **giảm `up` 12 dB** (chặn vòng loa P4 → mic điện thoại → về loa
+    P4 — đây là vòng gây rú khi âm lượng lớn);
+  - cả hai < **−60 dBFS** ⇒ **không sửa một mẫu nào**; chuyển trạng thái **mềm**: attack **10 ms** / release
+    **250 ms**, gain được **nội suy từng mẫu** trong khung nên không có bước nhảy ở biên khung (không nghe tiếng
+    “cụp”). Chiều nào không có khung mới quá **500 ms** thì coi như im lặng (điện thoại tắt mic/mất mạng không làm
+    màn bị câm vĩnh viễn). Trạng thái **riêng từng cuộc gọi**, xoá khi kết thúc.
+  - **Không đổi độ dài gói** (vào bao nhiêu byte ra bấy nhiêu) và **không đụng nhánh web ↔ web** (điện thoại ↔ điện
+    thoại vẫn nguyên byte).
+  - **Kèm tăng độ nhạy**: khi half-duplex bật, AGC cho phép **mục tiêu −14 dBFS** (trước −16) và **gain tối đa
+    +24 dB** (trước +12) — đã chặn được vòng lặp nên có thể to hơn mà không rú. Tắt half-duplex ⇒ AGC trở lại
+    −16 dBFS / +12 dB để A/B công bằng.
+  - Tắt để A/B bằng **`CCR_CALL_HALFDUPLEX=0`** (mặc định `1` = bật; log khởi động
+    `[audio] halfduplex=on thr=-34dBFS duck=down20/up12dB attack=10ms release=250ms`), kèm dòng chẩn đoán
+    `[duplex] <dev> up=…dBFS down=…dBFS giảm down …dB`. Add-on có thêm tuỳ chọn **`call_halfduplex`** (mặc định
+    `true`) trong Cấu hình, `run.sh` xuất thành `CCR_CALL_HALFDUPLEX`; `POST /call/test/play` trả thêm
+    `halfduplex` và log `[test] play ... halfduplex=1`.
+  - Test: `src/audioDuplex.test.ts` (16 test: (a) chỉ `up` → `down` −20 dB và `up` nguyên byte; (b) chỉ `down` →
+    `up` −12 dB; (c) cả hai im lặng → không đổi; (d) attack/release mượt + nội suy từng mẫu; (e) env tắt →
+    passthrough y nguyên byte; (f) độ dài gói 320/640/642 byte không đổi; ngưỡng −34/6 dB, “cũ” 500 ms, trạng thái
+    riêng từng cuộc gọi). Sửa 2 test `src/audioAgc.test.ts` + 2 test `src/testAudio.test.ts` đang kỳ vọng mục tiêu
+    −26 dBFS cũ (nay đọc thẳng hằng số `AGC_TARGET_DBFS` / `AGC_MAX_GAIN_DB`).
 - **Sửa “49 KB/s thay vì 32 KB/s”: có một ĐƯỜNG GỬI AUDIO THỨ HAI vào cùng một loa** (`src/audioOut.ts` mới). Bằng
   chứng đo trên P4 (2.9.321, mixer 1 kênh, 16 kHz mono): `POST /call/test/play` → **1617 gói / 30 s** (lẽ ra 1500 =
   50 gói/s) và **1.472.640 B / 30 s = 49 KB/s** (lẽ ra 32 KB/s), trong khi bộ đếm nhịp đã đúng 1 gói/20 ms.

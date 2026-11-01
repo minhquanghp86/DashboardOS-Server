@@ -10,12 +10,19 @@
 // limiter / make-up gain nao; cong them (a) trang goi decimate 3:1 khong loc chong alias (public/call-web.html,
 // da sua cung dot) va (b) DAC ES8311 tren P4 co duong cong phi tuyen — tieng nho bi chim, tieng lon bi vo.
 //
-// Module nay lam dung mot viec: dua muc am luong cua tung khung 20 ms ve -18 dBFS roi chan dinh o -1 dBFS.
+// Module nay lam dung mot viec: dua muc am luong cua tung khung 20 ms ve muc nham `AGC_TARGET_DBFS` roi chan dinh o
+// `LIMIT_DBFS`.
 //   - KHONG them do tre: xu ly ngay tung khung 20 ms (320 mau / 640 byte) khi no den, khong giu dem.
 //   - KHONG doi kich thuoc goi: vao bao nhieu byte ra bay nhieu byte (duoi le < 640 byte giu nguyen).
 //   - Chi ap cho nhanh xuong MAN (`peer.kind === 'panel'`); web <-> web (dien thoai <-> dien thoai dang tot)
 //     khong di qua day.
 //   - Bat/tat bang env `CCR_CALL_AGC` (mac dinh '1' = bat, '0' = tat de A/B).
+// (13/12/2026) Khi bat HALF-DUPLEX (`src/audioDuplex.ts`, env `CCR_CALL_HALFDUPLEX`, mac dinh BAT) thi vong lap am
+// hoc da bi chan o phia server, nen cho phep muc nham TO hon (-14 dBFS) va gain toi da +24 dB: "tieng nho, khong
+// nhay" la do thieu do nhay THAT, khong con phai hy sinh do nhay de tranh ru. Tat half-duplex (A/B) -> giu nguyen
+// bo so cu (-16 dBFS / +12 dB) de so sanh cong bang tren cung mot cuoc goi.
+import { HALFDUPLEX_ENABLED } from './audioDuplex.js';
+
 export const FRAME_MS = 20;
 export const SAMPLE_RATE = 16000;
 export const FRAME_SAMPLES = 320;
@@ -25,7 +32,9 @@ export const FRAME_BYTES = FRAME_SAMPLES * 2;         // 640
 // (05/12/2026) -18 -> -26 dBFS: do that tren P4 cho thay muc nham -18 dBFS lam loa nho cua may bi nen manh
 // (AGC day gain len +15..+24 dB roi limiter phai lam viec lien tuc) — tieng "to nhung rop", de kich vong lap am hoc
 // (loa P4 -> mic dien thoai -> "ru rit"). -26 dBFS = con du headroom cho loa + 14 dB dinh cua tieng noi.
-export const AGC_TARGET_DBFS = -16;
+// (13/12/2026) HALF-DUPLEX BAT -> -14 dBFS (muc nham cuoi cung la -16, su that la -26 chi de tranh ru; da chan duoc
+// vong lap o `src/audioDuplex.ts` nen tra lai do nhay). TAT half-duplex -> -16 dBFS nhu truoc (A/B).
+export const AGC_TARGET_DBFS = HALFDUPLEX_ENABLED ? -14 : -16;
 /** Gain len nhanh (5 ms) — tieng nho thanh ro ngay. */
 export const AGC_ATTACK_MS = 5;
 /** Gain xuong cham (200 ms) — khong "tho" am luong theo tung tu. */
@@ -33,7 +42,9 @@ export const AGC_RELEASE_MS = 200;
 export const AGC_MIN_GAIN_DB = -6;
 // (05/12/2026) +24 -> +12 dB: tren -26 dBFS thi +12 dB da dua khung -38 dBFS len dung muc nham; khuech dai qua
 // +12 dB chi keo nhieu nen phong len (tieng "re re" giua cac tu) — dung voi chieu "giam AGC / tat NS" cua bao cao.
-export const AGC_MAX_GAIN_DB = 12;
+// (13/12/2026) HALF-DUPLEX BAT -> +24 dB: muc nham -14 dBFS can +24 dB de keo tieng dien thoai o -38 dBFS len dung
+// muc; limiter mem -4 dBFS van chan dinh. TAT half-duplex -> +12 dB nhu truoc (A/B).
+export const AGC_MAX_GAIN_DB = HALFDUPLEX_ENABLED ? 24 : 12;
 /** Duoi muc nay la im lang: KHONG khuech dai (tranh khuech dai nhieu nen phong). */
 export const AGC_SILENCE_DBFS = -60;
 /** Nguong limiter (dBFS): -4 dBFS = 32767 * 0,6310. */
@@ -90,8 +101,8 @@ function readEnabled(): boolean {
 }
 
 export const AGC_ENABLED: boolean = readEnabled();
-// Nhat ky khoi dong: 'CCR_CALL_AGC=0' -> "[audio] agc=off target=-18dBFS" (A/B).
-if (!process.env.VITEST) console.log(`[audio] agc=${AGC_ENABLED ? 'on' : 'off'} target=${AGC_TARGET_DBFS}dBFS`);
+// Nhat ky khoi dong: 'CCR_CALL_AGC=0' -> "[audio] agc=off target=-14dBFS".
+if (!process.env.VITEST) console.log(`[audio] agc=${AGC_ENABLED ? 'on' : 'off'} target=${AGC_TARGET_DBFS}dBFS maxgain=+${AGC_MAX_GAIN_DB}dB`);
 
 export function newAgcState(gainDb = 0): AgcState { return { gainDb } }
 

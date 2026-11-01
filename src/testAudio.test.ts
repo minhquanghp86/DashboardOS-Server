@@ -14,7 +14,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { AGC_MAX_GAIN_DB, newAgcState, processPcm, rmsDbOf, peakOf } from './audioAgc.js';
+import {
+  AGC_MAX_GAIN_DB, AGC_TARGET_DBFS, LIMIT_DBFS, newAgcState, peakOf, processPcm, rmsDbOf,
+} from './audioAgc.js';
+import { HALFDUPLEX_ENABLED } from './audioDuplex.js';
 import { eqApply, newEqState } from './callEq.js';
 import {
   FRAME_BYTES as TA_FRAME_BYTES, frameCount, listTestAudio, loadTestAudio, parseWav, playPaced, readPlayParams,
@@ -372,23 +375,23 @@ describe('testAudio — nhip phat 20 ms (moc tuyet doi)', () => {
 
 // ── Bang chung dinh luong: tep mau di qua chuoi that co bi meo khong ────────────────────────────────────────────
 describe('testAudio — chuoi EQ -> AGC/limiter tren tep mau (co nen bat AGC khong)', () => {
-  it('tone-1k qua chuoi: KHONG meo (THD < 1%) va khong tran dinh — AGC -26 dBFS an toan', () => {
+  it('tone-1k qua chuoi: KHONG meo (THD < 1%) va khong tran dinh — muc nham AGC an toan', () => {
     const { wav } = loadTestAudio('tone-1k.wav', fs, [DIR]);
     for (const eq of [false, true]) {
       const out = throughChain(wav.data, { eq, agc: true });
-      expect(dbfs(peakOfPcm(out) / 32768)).toBeLessThanOrEqual(-4);      // duoi tran limiter -4 dBFS
-      // Do THD o NUA SAU tep: 1 s dau gain con dang chay tu 0 ve -6 dB (do la qua do cua AGC, khong phai meo).
+      expect(dbfs(peakOfPcm(out) / 32768)).toBeLessThanOrEqual(-4);      // duoi tran limiter LIMIT_DBFS
+      // Do THD o NUA SAU tep: 1 s dau gain con dang chay tu 0 ve muc nham (do la qua do cua AGC, khong phai meo).
       expect(thdPct(out.subarray(out.length / 2), 1000)).toBeLessThan(1);
     }
-    // EQ TAT: AGC dua dung ve muc nham -26 dBFS.
+    // EQ TAT: AGC dua dung ve AGC_TARGET_DBFS (doc hang so, KHONG viet cung -26 nhu truoc).
     const flat = throughChain(wav.data, { eq: false, agc: true });
-    expect(dbfs(rmsOf(flat.subarray(flat.length - TA_FRAME_BYTES * 50)))).toBeCloseTo(-26, 0);
-    // EQ BAT: presence +4 dB @ 1,5 kHz nang 1 kHz them ~2,3 dB; AGC bi chan o gain toi thieu -6 dB (AGC_MIN_GAIN_DB)
-    // nen muc ra cao hon muc nham dung bang phan duoc nang — KHONG phai meo, va van con 18 dB duoi tran -4 dBFS.
+    expect(dbfs(rmsOf(flat.subarray(flat.length - TA_FRAME_BYTES * 50)))).toBeCloseTo(AGC_TARGET_DBFS, 0);
+    // EQ BAT: presence +4 dB @ 1,5 kHz nang 1 kHz them ~2,3 dB -> AGC chi can it gain hon de ve CUNG muc nham
+    // (khong bi chan boi AGC_MIN_GAIN_DB o day) — do do muc ra bang muc nham, van con nhieu dB duoi tran limiter.
     const boosted = throughChain(wav.data, { eq: true, agc: true });
     const tailDb = dbfs(rmsOf(boosted.subarray(boosted.length - TA_FRAME_BYTES * 50)));
-    expect(tailDb).toBeGreaterThan(-26 - 0.5);
-    expect(tailDb).toBeLessThan(-23);
+    expect(tailDb).toBeCloseTo(AGC_TARGET_DBFS, 0);
+    expect(tailDb).toBeLessThan(LIMIT_DBFS - 3);
   });
 
   it('speech-like qua chuoi: dinh <= -4 dBFS (limiter khong phai cat cung)', () => {
@@ -414,12 +417,15 @@ describe('testAudio — chuoi EQ -> AGC/limiter tren tep mau (co nen bat AGC kho
     expect(dbfs(peakOfPcm(out) / 32768)).toBeLessThanOrEqual(-4);
   });
 
-  it('tep -20 dBFS RMS -> AGC GIAM 6 dB ve dung muc nham -26 dBFS (khong dung gain toi da)', () => {
+  it('tep -20 dBFS RMS -> AGC dua ve dung AGC_TARGET_DBFS (khong dung gain toi da)', () => {
     const { wav } = loadTestAudio('tone-1k.wav', fs, [DIR]);
     const out = throughChain(wav.data, { eq: false, agc: true });
     const tail = out.subarray(out.length - TA_FRAME_BYTES * 50);          // 1 s cuoi: gain da on dinh
-    expect(dbfs(rmsOf(tail))).toBeCloseTo(-26, 0);
-    expect(AGC_MAX_GAIN_DB).toBe(12);
-    expect(dbfs(rmsOf(tail))).toBeLessThan(dbfs(rmsOf(wav.data)));        // giam, khong phai tang
+    const before = dbfs(rmsOf(wav.data));
+    expect(dbfs(rmsOf(tail))).toBeCloseTo(AGC_TARGET_DBFS, 0);
+    // Gain toi da phu thuoc half-duplex: +24 dB khi BAT (muc nham -14, can keo tieng dien thoai nho len), +12 khi TAT.
+    expect(AGC_MAX_GAIN_DB).toBe(HALFDUPLEX_ENABLED ? 24 : 12);
+    expect(AGC_MAX_GAIN_DB).toBeGreaterThanOrEqual(Math.abs(AGC_TARGET_DBFS - before));  // khong bi chan gain
+    expect(Math.sign(dbfs(rmsOf(tail)) - before)).toBe(Math.sign(AGC_TARGET_DBFS - before));  // ve dung huong
   });
 });

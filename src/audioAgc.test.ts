@@ -6,8 +6,9 @@
 // (31/10/2026) AGC + LIMITER cho duong tieng DIEN THOAI -> LOA MAN (P4) — kiem tra thuan so hoc, khong can
 // thiet bi that:
 //   - im lang -> khong doi mau nao (khong khuech dai nhieu nen phong);
-//   - khung nho -> gain tang dung huong, dung gioi han [-6 dB, +12 dB], dua RMS ve ~-26 dBFS;
-//   - khung lon (0 dBFS) -> limiter mem giu dinh <= -4 dBFS, khong thanh "song vuong"/rach tieng;
+//   - khung nho -> gain tang dung huong, dung gioi han [AGC_MIN_GAIN_DB, AGC_MAX_GAIN_DB], dua RMS ve AGC_TARGET_DBFS
+//     (moi ky vong deu DOC TU HANG SO cua module: -14 dBFS / +24 dB khi bat half-duplex, -16 / +12 khi tat);
+//   - khung lon (0 dBFS) -> limiter mem giu dinh <= LIMIT_DBFS, khong thanh "song vuong"/rach tieng;
 //   - attack 5 ms (len nhanh) / release 200 ms (xuong cham);
 //   - CCR_CALL_AGC=0 -> passthrough y nguyen byte (A/B);
 //   - khung 20 ms: vao 640 byte ra 640 byte (khong doi kich thuoc goi, khong them do tre).
@@ -80,27 +81,33 @@ describe('audioAgc — im lang', () => {
 });
 
 describe('audioAgc — khung nho: tang gain dung huong va dung gioi han', () => {
-  it('-30 dBFS (RMS -33 dBFS) -> gain ~ +7 dB, RMS ra ~ -26 dBFS', () => {
+  it('khung nho -> gain huong ve AGC_TARGET_DBFS, RMS ra dung muc nham (khong hard-code so dB)', () => {
     const st = newAgcState(0);
+    const rmsIn = rmsDbOf(sineFrame(-30));
+    // Ky vong doc THANG tu hang so cua module (muc nham doi theo CCR_CALL_HALFDUPLEX: -14 dBFS khi bat, -16 khi tat)
+    // va tu gioi han gain toi da — khong viet cung con so dB nao.
+    const want = Math.max(AGC_MIN_GAIN_DB, Math.min(AGC_MAX_GAIN_DB, AGC_TARGET_DBFS - rmsIn));
     const pcm = sinePcm(40, -30);                   // ~800 ms: du cho release/attack on dinh
     const out = processPcm(pcm, st);
-    const want = AGC_TARGET_DBFS - rmsDbOf(sineFrame(-30));   // -26 - (-33) = +7 dB
     expect(st.gainDb).toBeCloseTo(want, 0);
     expect(st.gainDb).toBeGreaterThan(want - 1);
     expect(st.gainDb).toBeLessThan(want + 1);
     const last = out.subarray(out.length - FRAME_BYTES);
-    expect(rmsDbOf(last)).toBeGreaterThan(AGC_TARGET_DBFS - 1);
-    expect(rmsDbOf(last)).toBeLessThan(AGC_TARGET_DBFS + 1);
+    expect(rmsDbOf(last)).toBeCloseTo(rmsIn + want, 0);         // = AGC_TARGET_DBFS khi khong bi chan gain
+    if (want < AGC_MAX_GAIN_DB && want > AGC_MIN_GAIN_DB) {
+      expect(rmsDbOf(last)).toBeGreaterThan(AGC_TARGET_DBFS - 1);
+      expect(rmsDbOf(last)).toBeLessThan(AGC_TARGET_DBFS + 1);
+    }
   });
 
-  it('-40 dBFS -> gain len nhung KHONG vuot +12 dB (gain toi da)', () => {
+  it('-40 dBFS -> gain len nhung KHONG vuot AGC_MAX_GAIN_DB (gain toi da)', () => {
     const st = newAgcState(0);
-    processPcm(sinePcm(40, -40), st);               // target -26 - (-43) = +17 dB -> kep o +12
+    processPcm(sinePcm(40, -40), st);               // gain can > AGC_MAX_GAIN_DB -> kep o AGC_MAX_GAIN_DB
     expect(st.gainDb).toBeCloseTo(AGC_MAX_GAIN_DB, 2);
     expect(st.gainDb).toBeLessThanOrEqual(AGC_MAX_GAIN_DB);
   });
 
-  it('khung rat nho (-50 dBFS) va khung lon (0 dBFS) -> gain luon trong [-6, +12]', () => {
+  it('khung rat nho (-50 dBFS) va khung lon (0 dBFS) -> gain luon trong [AGC_MIN_GAIN_DB, AGC_MAX_GAIN_DB]', () => {
     const st = newAgcState(0);
     processPcm(sinePcm(60, -50), st);
     expect(st.gainDb).toBeLessThanOrEqual(AGC_MAX_GAIN_DB + 1e-9);
@@ -135,16 +142,16 @@ describe('audioAgc — khung lon: limiter mem -4 dBFS', () => {
     expect(dbfsOf(r.peak)).toBeLessThan(LIMIT_DBFS + 0.2);
   });
 
-  it('khung o muc binh thuong (sau AGC: dinh ~ -15 dBFS) -> limiter KHONG dung (trong suot)', () => {
+  it('khung o muc binh thuong (sau AGC, duoi knee) -> limiter KHONG dung (trong suot)', () => {
     const st = newAgcState(0);
-    processPcm(sinePcm(30, -30), st);               // gain on dinh ~ +15 dB
+    processPcm(sinePcm(30, -30), st);               // gain on dinh theo AGC_TARGET_DBFS (duoi knee nen khong nen)
     const r = processFrame(sineFrame(-30, 250), st);
     expect(r.limited).toBe(0);
     expect(dbfsOf(r.peak)).toBeLessThan(-2);        // duoi knee -> nguyen dang song sin
     expect(thdPct(sineFrame(-30, 250), 250)).toBeLessThan(1);
   });
 
-  it('gain cuc dai (+12 dB) van khong bao gio vuot -4 dBFS', () => {
+  it('gain cuc dai (AGC_MAX_GAIN_DB) van khong bao gio vuot LIMIT_DBFS', () => {
     const st = newAgcState(AGC_MAX_GAIN_DB);
     for (let k = 0; k < 5; k++) {
       const f = sineFrame(0, 1000, k * 320);
@@ -175,8 +182,11 @@ describe('audioAgc — attack 5 ms / release 200 ms', () => {
   it('gain LEN nhanh: mot khung -30 dBFS da dat >90% gain muc tieu', () => {
     const st = newAgcState(0);
     processFrame(sineFrame(-30), st);
-    const want = AGC_TARGET_DBFS - rmsDbOf(sineFrame(-30));    // +7 dB
-    expect(st.gainDb).toBeGreaterThan(0.9 * want);             // 0,9817 * 7 = 6,9 dB
+    // Muc tieu doc tu hang so (co the bi chan boi gain toi da) — khong viet cung so dB.
+    const want = Math.max(AGC_MIN_GAIN_DB,
+      Math.min(AGC_MAX_GAIN_DB, AGC_TARGET_DBFS - rmsDbOf(sineFrame(-30))));
+    expect(want).toBeGreaterThan(0);
+    expect(st.gainDb).toBeGreaterThan(0.9 * want);             // 0,9817 * want
   });
 
   it('gain XUONG cham: mot khung 0 dBFS chi giam <15% quang duong', () => {
