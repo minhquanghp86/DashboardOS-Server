@@ -42,6 +42,10 @@ export const AUDIOSRC_LOG_MS = 5000;
  */
 export const VOICE_GRACE_MS = 250;
 
+/** Bat/tat gui tieng Chrome xuong man (mac dinh TAT — tranh man tu phat tieng khi khong co cuoc goi). */
+export const MIRROR_AUDIO = /^(1|on|true|yes)$/i.test((process.env.CCR_MIRROR_AUDIO || '').trim());
+if (!process.env.VITEST) console.log(`[audio] mirror=${MIRROR_AUDIO ? 'on' : 'off'}`);
+
 const frames: Record<AudioSource, number> = { speaker: 0, device: 0, loop: 0, web: 0 };
 const bytes: Record<AudioSource, number> = { speaker: 0, device: 0, loop: 0, web: 0 };
 /** So khung tieng Chrome bi TU CHOI vi man dang co tieng nguoi (chan doan "gui trung da bi chan"). */
@@ -87,6 +91,9 @@ export function voiceHeld(dev: string): boolean { return callHold.has(dev); }
  */
 export function sendPanelAudio(dev: string, frame: Buffer, src: AudioSource = 'speaker'): boolean {
   const now = Date.now();
+  // (01/11/2026) Tieng Chrome/PulseAudio CHI gui khi duoc BAT TUONG MINH (CCR_MIRROR_AUDIO=1).
+  // Mac dinh TAT: truoc day P4 phat tieng cua trinh duyet 24/7 du khong co cuoc goi/app nao mo.
+  if (src === 'web' && !MIRROR_AUDIO) return false;
   if (src === 'web' && (callHold.has(dev) || now - (lastVoiceAt.get(dev) ?? -Infinity) <= VOICE_GRACE_MS)) {
     blocked++;                                     // tieng Chrome KHONG duoc xen vao loa dang co tieng nguoi
     return false;

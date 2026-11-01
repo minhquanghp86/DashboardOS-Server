@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import type http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+process.env.CCR_MIRROR_AUDIO = '1';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const screens = vi.hoisted(() => ({ list: [] as { id: string; w: number; h: number; cam: boolean; sd: boolean; spk: boolean; mic: boolean }[] }));
