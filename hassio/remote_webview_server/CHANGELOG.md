@@ -29,6 +29,10 @@
 - Test: `src/audioAgc.test.ts` (im lặng, khung nhỏ/khung lớn, attack/release, giới hạn gain, limiter −1 dBFS, tắt env
   → passthrough y nguyên byte, khung 20 ms vào 640 byte ra 640 byte).
 
+## V2.9.318
+- Thêm tuỳ chọn **`call_rate8k`**: hạ mẫu 16 kHz → **8 kHz** (lọc Butterworth bậc 6, chống alias) cho luồng tiếng
+  xuống màn, để khớp tốc độ tiêu thụ thực tế của P4 (đo được ~16 KB/s). Dùng để kiểm chứng giả thuyết I2S chạy 8 kHz.
+
 ## V2.9.317
 - **Gửi PCM stereo (L=R) xuống màn**: mixer của P4 chạy 2 kênh nên trước đây nhận mono 640 B bị lệch tốc độ
   ⇒ tràn buffer ⇒ vứt mẫu ⇒ nghe đứt quãng (`loa tu choi` 200–290 KB/30 s). Nay gửi 1280 B/20 ms, nhịp không đổi.

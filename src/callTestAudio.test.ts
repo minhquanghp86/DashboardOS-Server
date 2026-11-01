@@ -119,7 +119,8 @@ describe('POST /call/test/play', () => {
     expect(r.body.stereo).toBe(true);
     expect(r.body.frameBytes).toBe(STEREO_FRAME_BYTES);
     const line = log.mock.calls.map((c) => String(c[0])).find((s) => s.startsWith('[test] play'));
-    expect(line).toBe(`[test] play dev=${DEV} file=short.wav frames=0 dropped=5 loop=1 agc=1 eq=1 gain=0 stereo=1 frame=1280 ms=${r.body.ms} late=0`);
+    // (07/12/2026) them `rate=16000` (mac dinh TAT `CCR_CALL_RATE8K`) — bang chung tan so lay mau da gui.
+    expect(line).toBe(`[test] play dev=${DEV} file=short.wav frames=0 dropped=5 loop=1 agc=1 eq=1 gain=0 stereo=1 frame=1280 ms=${r.body.ms} late=0 rate=16000`);
   });
 
   it('TICH HOP: 1 khung mono 640 B -> goi gui xuong man 1280 B (L = R), nhip 20 ms', async () => {

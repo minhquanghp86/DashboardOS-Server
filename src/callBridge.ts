@@ -21,6 +21,9 @@
 //                                      cung origin (KHONG qua ingress) — day la duong bom tieng ra loa that.
 //                                      (06/12/2026) Nhanh xuong man gui STEREO 1280 B/goi (L = R, xem src/audioStereo.ts):
 //                                      tep mono 640 B -> goi 1280 B, van 20 ms/goi (`CCR_CALL_STEREO=0` -> mono nhu cu).
+//                                      (07/12/2026) `CCR_CALL_RATE8K=1` -> ha mau 16 kHz -> 8 kHz (loc 3,4 kHz roi bo mau
+//                                      x2, src/audioResample8k.ts): 640 B -> 320 B, van 20 ms/goi (16 KB/s = dung nhip
+//                                      tieu thu cua loa P4). MAC DINH TAT.
 import fs from 'node:fs';
 import http from 'node:http';
 import type { Duplex } from 'node:stream';
@@ -31,7 +34,14 @@ import { newAgcState, processPcm, AGC_ENABLED, AGC_SILENCE_DBFS, peakOf, type Ag
 import { FramePacer, type DropReason } from './audioPacer.js';
 // (06/12/2026) MONO -> STEREO (L = R) cho nhanh xuong LOA MAN: mixer cua P4 khai 2 kenh nen 640 B mono chi la
 // 10 ms stereo -> buffer loa luon day -> vut bot -> nghe dut quang. 1280 B/20 ms moi dung. Tat: CCR_CALL_STEREO=0.
-import { monoToStereo, SPEAKER_FRAME_BYTES, STEREO_ENABLED } from './audioStereo.js';
+import { monoToStereo, STEREO_ENABLED } from './audioStereo.js';
+// (07/12/2026) HA 16 kHz -> 8 kHz (env `CCR_CALL_RATE8K`): loc thong thap 3,4 kHz roi bo mau x2 -> 320 B/20 ms.
+// Do gia thuyet "I2S cua loa P4 chay 8 kHz" (P4 chi tieu thu ~16 KB/s trong khi server gui 32 KB/s) — xem
+// src/audioResample8k.ts. MAC DINH TAT.
+import {
+  downsample2, frameBytesFor, newDownsample2State, rateLogLine, RATE8K_ENABLED, SPEAKER_RATE_HZ,
+  type Downsample2State,
+} from './audioResample8k.js';
 // (05/12/2026) EQ bu loa nho cua P4: high-pass 120 Hz + presence +4 dB @ 1,5 kHz (env CCR_CALL_EQ de A/B).
 import { EQ_ENABLED, eqApply, newEqState, type EqState } from './callEq.js';
 // (05/12/2026) Do muc tieng that (web -> man): mot dong log moi 2 s, xem src/audioMeter.ts.
@@ -51,6 +61,19 @@ export const SAMPLE_RATE = 16000;
  *  (`sendToSpeaker`) gui 1280 byte stereo khi bat `CCR_CALL_STEREO` (xem src/audioStereo.ts). */
 export const FRAME_BYTES = 640;   // 20 ms mono
 
+// ── (07/12/2026) DINH DANG MOT GOI 20 ms TREN DUONG XUONG LOA MAN (mot cho duy nhat) ────────────────────────────
+/** So KENH cua mot goi 20 ms xuong man: 2 khi bat `CCR_CALL_STEREO` (mac dinh), 1 khi tat (A/B). */
+export const SPEAKER_CHANNELS: number = STEREO_ENABLED ? 2 : 1;
+/**
+ * So byte cua MOT goi 20 ms xuong loa man — dung cho bo dem nhip (src/audioPacer.ts) va bao trong ket qua
+ * `POST /call/test/play`:
+ *   - 16 kHz mono (mac dinh `CCR_CALL_STEREO=0`)               = 640;
+ *   - 16 kHz stereo (mac dinh)                                 = 1280;
+ *   - 8 kHz mono  (`CCR_CALL_RATE8K=1`, `CCR_CALL_STEREO=0`)    = 320  (16 KB/s — dung nhip tieu thu cua P4);
+ *   - 8 kHz stereo (`CCR_CALL_RATE8K=1`)                       = 640.
+ */
+export const SPEAKER_WIRE_FRAME_BYTES: number = frameBytesFor(SPEAKER_RATE_HZ, SPEAKER_CHANNELS);
+
 interface Leg {
   dev: string;
   peers: Set<WebSocket>;
@@ -69,6 +92,18 @@ const calls = new Map<string, Leg>();
 const agc = new Map<string, AgcState>();
 /** (05/12/2026) Trang thai EQ (high-pass + presence) rieng cho tung man — xem src/callEq.ts. */
 const eqs = new Map<string, EqState>();
+/**
+ * (07/12/2026) TRANG THAI BO LOC HA MAU 16 kHz -> 8 kHz, RIENG cho tung man (`CCR_CALL_RATE8K=1`).
+ * Bo loc IIR co "nho" (z1/z2): cat khung 20 ms thanh tung lan loc rieng ma tra trang thai ve 0 se lam MOI BIEN
+ * KHUNG thanh mot cu giat -> re 50 lan/giay. Vi vay giu MOT trang thai / man, xoa khi het cuoc goi / bat dau phep do.
+ */
+const resamplers = new Map<string, Downsample2State>();
+/** Trang thai loc 8 kHz cua `dev` (tao lan dau, giu giua cac khung). */
+function resamplerOf(dev: string): Downsample2State {
+  let st = resamplers.get(dev);
+  if (!st) { st = newDownsample2State(); resamplers.set(dev, st); }
+  return st;
+}
 /**
  * (31/10/2026) BO DO MUC TIENG (src/audioMeter.ts) — mot bo do / man, chi song trong cuoc goi:
  *   - `startCall()` mo bo do, `endCall()` dong (khong log gi khi dong);
@@ -123,7 +158,9 @@ export const framePacer = new FramePacer({
   backlog: (dev) => broadcaster.backlogBytes(dev),
   pace: PACE_ENABLED,
   // (06/12/2026) MOT goi 20 ms = 1280 byte khi bat stereo (640 khi tat) — nhip VAN 20 ms/goi, khong gui gap doi.
-  frameBytes: SPEAKER_FRAME_BYTES,
+  // (07/12/2026) Khi bat 8 kHz (`CCR_CALL_RATE8K=1`) thi 320 byte (mono) / 640 (stereo): phai dung SO BYTE THAT,
+  // neu khong mot khung 20 ms bi chia thanh 2 goi 640 B va bo dem ban 2 goi moi nhip (xem src/audioPacer.ts).
+  frameBytes: SPEAKER_WIRE_FRAME_BYTES,
   maxQueueFrames: intEnv('CCR_CALL_PACE_QUEUE', 5) || 5,
   maxBacklogBytes: intEnv('CCR_CALL_PACE_BACKLOG', 32 * 1024),
   onDrop: (dev, reason, queued) => logDrop(dev, reason, queued),
@@ -143,7 +180,11 @@ function logDrop(dev: string, reason: DropReason, queued: number): void {
   d.n = 0; d.queue = 0; d.backlog = 0; d.send = 0;
 }
 
-if (!process.env.VITEST) console.log(`[audio] pace=${PACE_ENABLED ? 'on' : 'off'} 20ms/khung`);
+if (!process.env.VITEST) {
+  console.log(`[audio] pace=${PACE_ENABLED ? 'on' : 'off'} 20ms/khung`);
+  // (07/12/2026) `[audio] rate=8k frame=320B/20ms` khi bat CCR_CALL_RATE8K, `[audio] rate=16k` khi tat (mac dinh).
+  console.log(rateLogLine(SPEAKER_CHANNELS));
+}
 
 export function isInCall(dev: string): boolean { return calls.has(dev); }
 
@@ -165,6 +206,7 @@ export function endCall(dev: string): void {
   calls.delete(dev);
   agc.delete(dev);
   eqs.delete(dev);
+  resamplers.delete(dev);                  // (07/12/2026) bo trang thai loc 8 kHz cua man nay
   framePacer.forget(dev);                  // (05/12/2026) bo khung con lai + hen gio cua man nay
   drops.delete(dev);
   meters.stop(dev);                        // (31/10/2026) dong bo do: het cuoc goi thi khong log nua
@@ -256,6 +298,10 @@ export function applyGainDb(pcm: Buffer, gainDb: number): Buffer {
  *     ra 640 byte — do muc `[audio] in/out` tinh tren mono), roi `monoToStereo()` nhan doi kenh (L = R) thanh
  *     **1280 byte = 20 ms stereo** truoc bo dem nhip (mixer P4 khai 2 kenh — xem src/audioStereo.ts).
  *     `CCR_CALL_STEREO=0` -> gui mono 640 byte nhu cu (A/B). Web <-> web khong di qua day nen van mono.
+ *   - (07/12/2026) TRUOC `monoToStereo()` co the co buoc HA MAU 16 kHz -> 8 kHz (`CCR_CALL_RATE8K=1`): loc thong thap
+ *     3,4 kHz roi lay moi mau thu 2 (src/audioResample8k.ts), 640 B -> 320 B, van 20 ms — de do gia thuyet "I2S cua
+ *     loa P4 chay 8 kHz" (loa chi tieu thu ~16 KB/s trong khi server gui 32 KB/s). MAC DINH TAT. Ha mau tren MONO
+ *     (truoc khi nhan doi kenh) vi bo loc/bo mau chi co nghia voi mot kenh.
  *   - Tat AGC bang env CCR_CALL_AGC=0 (A/B: so sanh truc tiep tren cung mot cuoc goi).
  *   - (31/10/2026) DO MUC THAT tai day: `in` = RMS truoc AGC, `out` = RMS sau AGC, `peak` = dinh sau limiter,
  *     `gain` = gain hien tai (src/audioMeter.ts in ra mot dong log moi 2 s cho moi man dang trong cuoc goi).
@@ -285,7 +331,12 @@ export function sendToSpeaker(dev: string, pcm: Buffer, opts?: SpeakerOpts): voi
   // (06/12/2026) MONO -> STEREO SAU AGC, TRUOC bo dem nhip: moi mau lap 2 lan (L = R), 640 B -> 1280 B, do dai
   // THOI GIAN khong doi (van 20 ms). Ly do: mixer cua P4 khai 2 kenh — 640 B mono chi la 10 ms stereo nen buffer
   // loa luon day va bi vut. `CCR_CALL_STEREO=0` -> gui mono nhu cu (A/B). Chi nhanh xuong MAN di qua day.
-  const wire = STEREO_ENABLED ? monoToStereo(out) : out;
+  // (07/12/2026) HA 16 kHz -> 8 kHz NGAY TRUOC khi nhan doi kenh (`CCR_CALL_RATE8K=1`): loc thong thap 3,4 kHz roi
+  // bo mau x2, 640 B -> 320 B (van 20 ms). Dat TRUOC `monoToStereo()` vi `downsample2()` nhan PCM MONO: loc tren
+  // du lieu XEN KENH L/R thi `bo mau x2` chi con lai mot kenh (mat kenh kia) -> phai ha mau tren mono roi moi lap kenh.
+  // Trang thai loc lay theo TUNG man (`resamplerOf`) -> khong re o bien khung.
+  const mono8 = RATE8K_ENABLED ? downsample2(out, resamplerOf(dev)) : out;
+  const wire = STEREO_ENABLED ? monoToStereo(mono8) : mono8;
   framePacer.push(dev, wire);                               // (05/12/2026) 20 ms/khung, khong bun no
   if (m) {
     // (06/12/2026) Do muc tren MONO (truoc khi nhan doi kenh) -> dBFS giu nguyen y nghia, so duoc voi cac lan truoc.
@@ -376,7 +427,8 @@ async function loopTest(dev: string, aec: boolean): Promise<unknown> {
  * micro cua dien thoai. Bo cuoc goi ra khoi phep do thi moi lan chay lai cho ra cung mot dau vao -> so sanh duoc
  * `frames`/`dropped`/`[audio]`/`[audio-diag]` giua hai lan bat/tat AGC, EQ, pace.
  *
- * Di DUNG duong that: `sendToSpeaker()` (EQ -> AGC -> MONO->STEREO -> pacer -> broadcaster.sendAudioFrame), KHONG
+ * Di DUNG duong that: `sendToSpeaker()` (EQ -> AGC -> [HA MAU 8 kHz] -> MONO->STEREO -> pacer ->
+ * broadcaster.sendAudioFrame), KHONG
  * tao call record (`startCall` khong duoc goi => khong co `[call]`, khong bat ControlField.Call, khong dung mic cua
  * man). Tep mau van la MONO 16 kHz (dung dinh dang trang goi gui len) nen bai do di qua dung chuoi xu ly that:
  * 640 B mono vao -> **1280 B stereo ra**, 20 ms/goi (xem src/audioStereo.ts).
@@ -399,8 +451,12 @@ export interface TestPlayResult {
   gain: number;
   /** (06/12/2026) Duong xuong man gui STEREO (1280 B/goi) hay MONO (640 B/goi, A/B `CCR_CALL_STEREO=0`). */
   stereo: boolean;
-  /** So byte cua MOT goi gui xuong man (1280 stereo / 640 mono). */
+  /** So byte cua MOT goi gui xuong man (1280 stereo / 640 mono / 320 khi bat 8 kHz mono / 640 khi 8 kHz stereo). */
   frameBytes: number;
+  /** (07/12/2026) Tan so lay mau THAT SU gui xuong man: 8000 khi bat `CCR_CALL_RATE8K`, nguoc lai 16000. */
+  rate: number;
+  /** (07/12/2026) `CCR_CALL_RATE8K=1`? (ha mau 16 kHz -> 8 kHz truoc khi gui — xem src/audioResample8k.ts). */
+  rate8k: boolean;
   /** So nhip bi tre qua muc bu (event loop cua server bi chan) — "giat do server". */
   late: number;
 }
@@ -438,6 +494,7 @@ export async function playTestAudio(o: TestPlayOptions): Promise<TestPlayResult>
   framePacer.forget(o.dev);                // so lieu sach cho lan phat nay
   agc.delete(o.dev);                       // gain bat dau tu 0 (khong keo gain cu cua cuoc goi truoc)
   eqs.delete(o.dev);                       // trang thai EQ sach
+  resamplers.delete(o.dev);                // (07/12/2026) trang thai loc 8 kHz sach (bat dau tu im lang)
   drops.delete(o.dev);
   testMeters.add(o.dev);                   // in `[audio] ...` moi 2 s du KHONG co cuoc goi — day la bang chung do
   meters.start(o.dev);
@@ -459,15 +516,18 @@ export async function playTestAudio(o: TestPlayOptions): Promise<TestPlayResult>
     // so voi 640 B mono truoc day) — day la bang chung A/B, khong phai suy doan tu ma nguon.
     console.log(`[test] play dev=${o.dev} file=${name} frames=${st.frames} dropped=${st.dropped} ` +
       `loop=${loop} agc=${agcOn ? 1 : 0} eq=${eqOn ? 1 : 0} gain=${gainDb} ` +
-      `stereo=${STEREO_ENABLED ? 1 : 0} frame=${framePacer.bytesPerFrame} ms=${ms} late=${r.lateTicks}`);
+      `stereo=${STEREO_ENABLED ? 1 : 0} frame=${framePacer.bytesPerFrame} ms=${ms} late=${r.lateTicks} ` +
+      `rate=${SPEAKER_RATE_HZ}`);
     return {
       ok: true, dev: o.dev, file: name, frames: st.frames, dropped: st.dropped, ms, loop,
       agc: agcOn, eq: eqOn, gain: gainDb, stereo: STEREO_ENABLED, frameBytes: framePacer.bytesPerFrame, late: r.lateTicks,
+      rate: SPEAKER_RATE_HZ, rate8k: RATE8K_ENABLED,
     };
   } finally {
     playing.delete(o.dev);
     testMeters.delete(o.dev);
     meters.stop(o.dev);
+    resamplers.delete(o.dev);              // (07/12/2026) giai phong trang thai loc 8 kHz
     framePacer.forget(o.dev);
   }
 }
