@@ -1,5 +1,5 @@
 name: "Dashboard OS Server"
-version: "2.9.321"
+version: "2.9.322"
 slug: "remote_webview_server"
 # (02/10/2026) Anh dung san tren ghcr (CI tag = version). Truoc day addon build tai may HA tu build.yaml + Dockerfile,
 # va Supervisor xuat ca anh Docker (~1,1 GB sau nen) vao moi ban sao luu; anh keo ve thi khong. build.yaml/Dockerfile

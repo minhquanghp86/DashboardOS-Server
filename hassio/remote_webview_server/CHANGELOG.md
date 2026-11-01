@@ -1,4 +1,24 @@
 ## Sắp tới (chưa bump version)
+- **Sửa “49 KB/s thay vì 32 KB/s”: có một ĐƯỜNG GỬI AUDIO THỨ HAI vào cùng một loa** (`src/audioOut.ts` mới). Bằng
+  chứng đo trên P4 (2.9.321, mixer 1 kênh, 16 kHz mono): `POST /call/test/play` → **1617 gói / 30 s** (lẽ ra 1500 =
+  50 gói/s) và **1.472.640 B / 30 s = 49 KB/s** (lẽ ra 32 KB/s), trong khi bộ đếm nhịp đã đúng 1 gói/20 ms.
+  Nguồn gửi dư là **`src/audioCapture.ts` `drainTick()`**: tiếng Chrome/PulseAudio (1280 B/40 ms = 32 KB/s) gửi
+  **thẳng** `broadcaster.sendAudioFrame()` cho mọi màn đã đăng ký và **chỉ** bị chặn bởi `callHold` — mà `callHold`
+  chỉ được đặt trong `startCall()`, còn bài đo phát tệp mẫu **không mở call record** ⇒ cùng một loa nhận 2 luồng.
+  Nay **mọi PCM xuống loa đi qua MỘT cổng duy nhất** `sendPanelAudio(dev, frame, src)` (`src/audioOut.ts`):
+  nguồn `speaker` (tiếng người + `POST /call/test/play`, qua bộ đếm nhịp), `device` (trang thử `/call/ws`),
+  `loop` (`POST /call/test/loop`), `web` (Chrome/PulseAudio). `web` bị **từ chối** khi màn đang giữ loa cho tiếng
+  người (`holdVoice()` từ `startCall()`/`playTestAudio()`, đếm tham chiếu) hoặc vừa nhận tiếng người ≤ 250 ms.
+  `sendToDevice()` **không còn tự chia gói rồi gửi ngay**: nó đưa PCM qua đúng bộ đếm nhịp và đúng định dạng gói
+  của `sendToSpeaker()` (mono → [8 kHz] → [stereo]) nên không còn “1 khung vào → 2 gói ra”. `onMicFrame()`
+  **không gửi mic của một màn về chính loa của nó** (chặn self-link ⇒ không echo).
+  Thêm bộ đếm theo nguồn, log **mỗi 5 s**: `[audiosrc] speaker=<n> device=<n> loop=<n> web=<n> kb/s=<...>`.
+  Đo lại trên loopback bằng script mới `scripts/measure-audiosrc.mjs` (`--old` = hành vi trước khi sửa):
+  trước **746 gói / 63,6 KB/s / 74,6 gói/s** (có cả gói 642 B và 1282 B = 2 luồng) → sau **500 gói / 32,1 KB/s /
+  49,9 gói/s, chỉ một cỡ gói 642 B, nguồn thứ hai bị chặn 246/246 khung**.
+- Test: `src/audioSources.test.ts` — (a) 1 khung PCM vào → đúng 1 gói ra; (b) 50 khung trong 1 s → 50 gói / 32.000 B;
+  (c) `/call/test/play` 10 s → 500 gói / 320.000 B = 32 KB/s; (d) nguồn thứ hai (`web`) bị từ chối trong lúc phát và
+  trong cuộc gọi (`web=0`, `blocked>0`); (e) self-link không echo; (f) định dạng dòng `[audiosrc]`.
 - **Sửa “nghe đứt quãng” trên loa P4: gửi STEREO (L = R) 1280 B/20 ms** (`src/audioStereo.ts`). Bằng chứng đo được
   trên thiết bị: server gửi PCM **mono** 640 B (20 ms), nhưng log P4 cho thấy `Mixer Source Speaker ... num_channels: 2`,
   “loa từ chối 201920–292800 B / 30 s”, “rơi ở hàng đợi 53–98 gói” ⇒ ring buffer loa **luôn đầy và bị vứt bớt**: 640 B

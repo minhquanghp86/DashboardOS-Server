@@ -7,7 +7,9 @@
 //
 // Van de do duoc (xem bao cao "giat cuc" va src/callBridge.ts): truoc day server gui THANG moi goi PCM nhan duoc —
 // `sendToSpeaker()` -> `sendToDevice()` -> `broadcaster.sendAudioFrame()` (mot goi WS rieng cho moi 640 byte), khong
-// co hang doi, khong co dong ho. Nhip ra vi vay DUNG BANG nhip vao: dien thoai gui sao thi loa nhan vay, gom ca
+// co hang doi, khong co dong ho. (09/12/2026: `sendToDevice()` DA BO duong tat nay — no cung di qua bo dem nhip nay,
+// xem src/audioOut.ts. Moi PCM xuong loa man chi con MOT cong `sendPanelAudio()` va MOT noi chia goi la bo dem nhip.)
+// Nhip ra vi vay DUNG BANG nhip vao: dien thoai gui sao thi loa nhan vay, gom ca
 // jitter cua Wi-Fi va ca luc trang goi "don" 2-3 khung mot lan. Phia firmware, `q_audio_` sau 30 goi nhung RING BUFFER
 // cua loa chi 250 ms (i2s_audio_speaker: ring_buffer_duration = max(50 ms DMA, buffer_duration)) — mot dot 3 khung
 // (60 ms) lam day ring buffer -> byte thua bi VUT (`aud_bytes_drop_`), roi ngay sau do khong con gi de phat -> loa

@@ -48,7 +48,10 @@ import { EQ_ENABLED, eqApply, newEqState, type EqState } from './callEq.js';
 import { AudioMeters, METER_WINDOW_MS, type AudioMeter } from './audioMeter.js';
 // (05/12/2026) Bo phat thu nghiem: doc WAV + nhip 20 ms theo moc tuyet doi (src/testAudio.ts).
 import { frameCount, listTestAudio, loadTestAudio, playPaced, readPlayParams } from './testAudio.js';
-import { callHold } from './audioCapture.js';
+// (09/12/2026) MOT CONG DUY NHAT xuong loa man + bo dem theo nguon: `sendPanelAudio()` (xem src/audioOut.ts).
+// `holdVoice`/`releaseVoice` thay cho `callHold.add/delete` cu — cung mot tap, nhung dem tham chieu duoc (cuoc goi va
+// phep do `/call/test/play` co the chong nhau) va chan luon nguon tieng Chrome khi man dang co tieng nguoi.
+import { holdVoice, releaseVoice, sendPanelAudio, type AudioSource } from './audioOut.js';
 import { subscribeLiveFrames } from './camProxy.js';
 import { isDoor, subscribeDoorFrames } from './door.js';
 import { isCallParty, isWebSource, subscribeWebFrames, videoAllowed, videoSourceOf } from './calls.js';
@@ -154,7 +157,9 @@ export const PACE_ENABLED: boolean = readPace();
  *   - `CCR_CALL_PACE_BACKLOG`  tran bufferedAmount cua socket (mac dinh 32 KB ~ 1 s tieng); vuot -> bo khung.
  */
 export const framePacer = new FramePacer({
-  send: (dev, frame) => sendFrameToDevice(dev, frame),
+  // (09/12/2026) Nguon cua tung goi do bo dem nhip phat ra = nguon da push vao (`pacerSrcOf`) — de dong
+  // `[audiosrc]` tach duoc "tieng nguoi/phep do" (`speaker`) khoi PCM thang cua trang thu / bip do (`device`/`loop`).
+  send: (dev, frame) => sendFrameToDevice(dev, frame, pacerSrcOf(dev)),
   backlog: (dev) => broadcaster.backlogBytes(dev),
   pace: PACE_ENABLED,
   // (06/12/2026) MOT goi 20 ms = 1280 byte khi bat stereo (640 khi tat) — nhip VAN 20 ms/goi, khong gui gap doi.
@@ -174,14 +179,25 @@ export const framePacer = new FramePacer({
  *   - dai DUNG `SPEAKER_WIRE_FRAME_BYTES` -> push thang (truong hop binh thuong: mic 640 B -> stereo 1280 B);
  *   - dai KHAC -> CAT NHO thanh tung goi `frameBytes` roi moi push, nho vay bo dem nhip chi con dung mot viec la
  *     phat MOT goi moi 20 ms, khong phai tu chia lai du lieu.
- *   - manh cuoi ngan hon mot goi (du lieu le) van duoc push NGAY, khong giu lai cho du byte: am thanh khong duoc phep
- *     "ket" trong luc cho them du lieu, va nhip ra van la 1 goi/20 ms nen mot goi ngan khong lam doi toc do.
+ *   - manh cuoi ngan hon mot goi (du lieu le) van duoc push NGAY, khong giu lai cho du byte: am thanh khong duoc
+ *     phep "ket" trong luc cho them du lieu, va nhip ra van la 1 goi/20 ms nen mot goi ngan khong lam doi toc do.
+ * (09/12/2026) `src` = NGUON cua du lieu nay; bo dem nhip gan nhan do cho tung goi no phat ra (`pacerSrcOf`).
  */
-function pushToPacer(dev: string, pcm: Buffer): void {
+function pushToPacer(dev: string, pcm: Buffer, src: AudioSource = 'speaker'): void {
+  pacerSrc.set(dev, src);
   const fb = SPEAKER_WIRE_FRAME_BYTES;
   if (pcm.length === fb) { framePacer.push(dev, pcm); return; }
   for (let o = 0; o < pcm.length; o += fb) framePacer.push(dev, pcm.subarray(o, Math.min(pcm.length, o + fb)));
 }
+
+/**
+ * (09/12/2026) Nguon dang day du lieu vao bo dem nhip cua tung man. Bo dem nhip phat MOT goi moi 20 ms nhung khong
+ * biet goi do den tu dau, nen nhan theo lan `push()` gan nhat. Binh thuong moi man CHI CO MOT nguon push (luat
+ * "mot duong gui" cua src/audioOut.ts) nen "lan push gan nhat" la dung nguon.
+ */
+const pacerSrc = new Map<string, AudioSource>();
+function pacerSrcOf(dev: string): AudioSource { return pacerSrc.get(dev) ?? 'speaker'; }
+function forgetPacerSrc(dev: string): void { pacerSrc.delete(dev); }
 
 /** Bo dem khung BI BO theo tung man (log toi da 1 lan / 5 s de khong spam khi mang nghen keo dai). */
 const drops = new Map<string, { n: number; at: number; queue: number; backlog: number; send: number; late: number }>();
@@ -211,7 +227,7 @@ export function startCall(dev: string): Leg | null {
   calls.set(dev, leg);
   meters.start(dev);                       // (31/10/2026) bat dau do muc tieng cho man nay (chi trong cuoc goi)
   meterTimer();
-  callHold.add(dev);
+  holdVoice(dev);                          // (09/12/2026) loa cua man nay thuoc ve tieng nguoi: chan tieng Chrome (audioOut)
   broadcaster.sendDeviceControl(dev, ControlField.Call, 1);
   console.log(`[call] ${dev}: bat dau cuoc goi`);
   return leg;
@@ -225,9 +241,10 @@ export function endCall(dev: string): void {
   eqs.delete(dev);
   resamplers.delete(dev);                  // (07/12/2026) bo trang thai loc 8 kHz cua man nay
   framePacer.forget(dev);                  // (05/12/2026) bo khung con lai + hen gio cua man nay
+  forgetPacerSrc(dev);                     // (09/12/2026) bo nhan nguon cua bo dem nhip
   drops.delete(dev);
   meters.stop(dev);                        // (31/10/2026) dong bo do: het cuoc goi thi khong log nua
-  callHold.delete(dev);
+  releaseVoice(dev);                       // (09/12/2026) tra loa lai (tieng Chrome duoc phep quay lai)
   broadcaster.sendDeviceControl(dev, ControlField.Call, 0);
   for (const p of leg.peers) { try { p.close(1000, 'het cuoc goi'); } catch { /* */ } }
   const s = Math.round((Date.now() - leg.startedAt) / 1000);
@@ -245,7 +262,9 @@ export function onMicFrame(dev: string, buf: Buffer): void {
   const pcm = buf.subarray(4);
   const at = Date.now();
   for (const p of leg.peers) if (p.readyState === WebSocket.OPEN && p.bufferedAmount < 64 * 1024) p.send(pcm);
-  if (leg.link && !leg.muted && calls.has(leg.link)) sendToSpeaker(leg.link, pcm);
+  // (09/12/2026) KHONG BAO GIO gui mic cua mot man ve CHINH loa cua no (`leg.link !== dev`): mot self-link (du lieu
+  // hong / goi tu chinh no) truoc day tao vong echo mic -> loa -> mic -> ... tren cung mot thiet bi.
+  if (leg.link && leg.link !== dev && !leg.muted && calls.has(leg.link)) sendToSpeaker(leg.link, pcm);
   for (const f of leg.listeners) f(pcm, at);
 }
 
@@ -278,17 +297,40 @@ export interface SpeakerOpts {
 }
 
 /**
- * Gui MOT khung PCM xuong man qua broadcaster. `false` = KHONG gui duoc (socket dong / bufferedAmount qua cao —
- * xem AUDIO_HIGH_WATER trong src/broadcaster.ts). Nho co `false` ma bo dem nhip (src/audioPacer.ts) dem duoc `dropped`
+ * Gui MOT khung PCM xuong man qua CONG DUY NHAT (`sendPanelAudio` — src/audioOut.ts). `false` = KHONG gui duoc
+ * (socket dong / bufferedAmount qua cao — xem AUDIO_HIGH_WATER trong src/broadcaster.ts) hoac nguon nay bi chan vi
+ * man dang co tieng nguoi (chi voi nguon `web`). Nho co `false` ma bo dem nhip (src/audioPacer.ts) dem duoc `dropped`
  * that su thay vi "gui ma khong biet co toi noi hay khong".
  */
-export function sendFrameToDevice(dev: string, frame: Buffer): boolean {
-  return broadcaster.sendAudioFrame(dev, frame) !== false;
+export function sendFrameToDevice(dev: string, frame: Buffer, src: AudioSource = 'speaker'): boolean {
+  return sendPanelAudio(dev, frame, src);
 }
 
-/** Tieng cua dau goi xuong loa man (chia dung khung 20 ms) — GUI NGAY, khong qua bo dem nhip. */
-export function sendToDevice(dev: string, pcm: Buffer): void {
-  for (let o = 0; o + 1 < pcm.length; o += FRAME_BYTES) sendFrameToDevice(dev, pcm.subarray(o, Math.min(pcm.length, o + FRAME_BYTES)));
+/**
+ * (09/12/2026) Dinh dang THAT cua mot goi 20 ms tren duong xuong loa man: MONO -> [8 kHz] -> [STEREO].
+ * Dung CHUNG cho `sendToSpeaker()` va `sendToDevice()` de moi goi xuong loa deu cung mot dinh dang (truoc day
+ * `sendToDevice()` gui 640 B mono trong khi duong chinh gui 1280 B stereo tren CUNG mot loa).
+ */
+function speakerWire(dev: string, mono: Buffer): Buffer {
+  // (07/12/2026) HA 16 kHz -> 8 kHz NGAY TRUOC khi nhan doi kenh (`CCR_CALL_RATE8K=1`), trang thai loc theo TUNG man.
+  const mono8 = RATE8K_ENABLED ? downsample2(mono, resamplerOf(dev)) : mono;
+  // (06/12/2026) MONO -> STEREO (L = R): 640 B -> 1280 B, do dai THOI GIAN khong doi (van 20 ms).
+  return STEREO_ENABLED ? monoToStereo(mono8) : mono8;
+}
+
+/**
+ * (09/12/2026) PCM cua may/trang thu phat ra loa man (bip do vong lap, PCM tu trang `/call/ws`) — KHONG qua EQ/AGC
+ * (de phep do khong bi lam sai lech) NHUNG di qua CUNG bo dem nhip 20 ms va CUNG dinh dang goi nhu `sendToSpeaker()`.
+ *
+ * Truoc day ham nay tu chia 640 B roi gui NGAY (`broadcaster.sendAudioFrame` truc tiep, khong nhip), nen:
+ *   - mot khung 20 ms bi chia thanh 2 goi khi duong xuong man la stereo 1280 B (goi 640 B khong dung 20 ms);
+ *   - va no la duong GUI THU HAI khong qua bo dem nhip -> khong bi gioi han toc do, khong dem duoc `dropped`.
+ * Nay bo dem nhip la noi DUY NHAT chia goi + giu nhip, dung nhu ghi chu (08/12/2026) cua src/audioPacer.ts.
+ */
+export function sendToDevice(dev: string, pcm: Buffer, src: AudioSource = 'device'): void {
+  for (let o = 0; o + 1 < pcm.length; o += FRAME_BYTES) {
+    pushToPacer(dev, speakerWire(dev, pcm.subarray(o, Math.min(pcm.length, o + FRAME_BYTES))), src);
+  }
 }
 
 /** Ap them gain tuyen tinh (dB) vao MOT buffer PCM — copy, khong sua buffer goc. Dung cho tham so `gain=` cua
@@ -355,12 +397,14 @@ export function sendToSpeaker(dev: string, pcm: Buffer, opts?: SpeakerOpts): voi
   // bo mau x2, 640 B -> 320 B (van 20 ms). Dat TRUOC `monoToStereo()` vi `downsample2()` nhan PCM MONO: loc tren
   // du lieu XEN KENH L/R thi `bo mau x2` chi con lai mot kenh (mat kenh kia) -> phai ha mau tren mono roi moi lap kenh.
   // Trang thai loc lay theo TUNG man (`resamplerOf`) -> khong re o bien khung.
-  const mono8 = RATE8K_ENABLED ? downsample2(out, resamplerOf(dev)) : out;
-  const wire = STEREO_ENABLED ? monoToStereo(mono8) : mono8;
+  // (09/12/2026) Dinh dang goi nay dung CHUNG voi `sendToDevice()` (`speakerWire`) — mot loa, mot dinh dang goi.
+  const wire = speakerWire(dev, out);
   // (08/12/2026) PUSH SAU KHI CHIA DUNG CO MOT GOI: bo dem nhip chi phat 1 goi/20 ms, nen du lieu vao phai duoc cat
   // nho theo `SPEAKER_WIRE_FRAME_BYTES` TRUOC khi push — xem `pushToPacer()`. Truoc day push thang `wire` nen khi
   // `frameBytes` = 320/640 ma du lieu la 640 B thi mot khung 20 ms bi chia 2 va loa nhan gap doi.
-  pushToPacer(dev, wire);
+  // (09/12/2026) `src='speaker'`: day la DUONG CHINH (tieng nguoi + `POST /call/test/play`) — duong duy nhat duoc
+  // phep bom vao loa khi man dang trong cuoc goi / dang duoc phat tep mau (xem src/audioOut.ts).
+  pushToPacer(dev, wire, 'speaker');
   if (m) {
     // (06/12/2026) Do muc tren MONO (truoc khi nhan doi kenh) -> dBFS giu nguyen y nghia, so duoc voi cac lan truoc.
     m.add({ inDb, outDb: db(rms(out)), peakDb: db(peakOf(out) / 32768), gainDb,
@@ -428,7 +472,9 @@ async function loopTest(dev: string, aec: boolean): Promise<unknown> {
         const at = sent * 20;
         const b = plan.findIndex((p) => at >= p && at < p + 200);
         if (b >= 0 && at === plan[b]) beepAt.push(Date.now());
-        sendToDevice(dev, b >= 0 ? tone(20, 1000, 0.35, (at - plan[b]) * SAMPLE_RATE / 1000) : Buffer.alloc(FRAME_BYTES));
+        // (09/12/2026) `src='loop'`: bip do di qua cung bo dem nhip (khong con gui thang), de nguon duoc dem rieng
+        // trong dong `[audiosrc]` va de "mot khung 20 ms -> mot goi".
+        sendToDevice(dev, b >= 0 ? tone(20, 1000, 0.35, (at - plan[b]) * SAMPLE_RATE / 1000) : Buffer.alloc(FRAME_BYTES), 'loop');
         sent++;
       }
       if (el > 7800) { clearInterval(iv); done(); }
@@ -515,10 +561,16 @@ export async function playTestAudio(o: TestPlayOptions): Promise<TestPlayResult>
   const signal = { aborted: false };
   playing.set(o.dev, signal);
   framePacer.forget(o.dev);                // so lieu sach cho lan phat nay
+  forgetPacerSrc(o.dev);                   // (09/12/2026) nhan nguon sach
   agc.delete(o.dev);                       // gain bat dau tu 0 (khong keo gain cu cua cuoc goi truoc)
   eqs.delete(o.dev);                       // trang thai EQ sach
   resamplers.delete(o.dev);                // (07/12/2026) trang thai loc 8 kHz sach (bat dau tu im lang)
   drops.delete(o.dev);
+  // (09/12/2026) SUA LOI "49 KB/s trong khi le ra 32 KB/s": phep do phat tep mau qua `sendToSpeaker()` (32 KB/s) NHUNG
+  // khong mo call record, nen `callHold` khong co `dev` -> src/audioCapture.ts van bom them tieng Chrome/PulseAudio
+  // (1280 B/40 ms = 32 KB/s) vao CUNG cai loa do. Nay phep do GIU loa (hold) trong suot thoi gian phat: nguon `web`
+  // bi tu choi (`sendPanelAudio`) => chi con MOT duong gui, dong `[audiosrc]` chi ra `speaker=<n> ... web=0`.
+  holdVoice(o.dev);
   testMeters.add(o.dev);                   // in `[audio] ...` moi 2 s du KHONG co cuoc goi — day la bang chung do
   meters.start(o.dev);
   meterTimer();
@@ -552,6 +604,8 @@ export async function playTestAudio(o: TestPlayOptions): Promise<TestPlayResult>
     meters.stop(o.dev);
     resamplers.delete(o.dev);              // (07/12/2026) giai phong trang thai loc 8 kHz
     framePacer.forget(o.dev);
+    forgetPacerSrc(o.dev);                 // (09/12/2026) giai phong nhan nguon
+    releaseVoice(o.dev);                   // (09/12/2026) tra loa lai: tieng Chrome duoc phep quay lai (neu dang bat)
   }
 }
 
@@ -623,7 +677,7 @@ export function handleCallUpgrade(req: http.IncomingMessage, socket: Duplex, hea
     const leg = startCall(dev);
     if (!leg) { ws.close(4009, 'man dang ban'); return; }
     leg.peers.add(ws);
-    ws.on('message', (data, isBinary) => { if (isBinary) sendToDevice(dev, data as Buffer); });
+    ws.on('message', (data, isBinary) => { if (isBinary) sendToDevice(dev, data as Buffer, 'device'); });
     ws.on('close', () => { leg.peers.delete(ws); if (calls.get(dev) === leg) endCall(dev); });
     ws.on('error', () => { /* close xu ly */ });
   });

@@ -13,7 +13,15 @@
 // chi P4) — khong co logic "chon thiet bi dang hoat dong" vi pham vi hien
 // tai chi co dung mot dich.
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
-import { broadcaster } from './deviceManager.js';
+// (09/12/2026) DUONG GUI THU HAI da bi tim ra — xem src/audioOut.ts. Tieng Chrome/PulseAudio truoc day goi thang
+// `broadcaster.sendAudioFrame()` cho MOI man dang ky, va CHI bi chan boi `callHold` (dat trong `startCall()`). Phep do
+// `POST /call/test/play` khong mo call record, nen no van bom ~32 KB/s vao dung cai loa dang phat tep mau: do tren P4
+// la 49 KB/s thay vi 32 KB/s. Nay di qua cong `sendPanelAudio(..., 'web')`: bi tu choi khi man dang GIU loa cho tieng
+// nguoi (`holdVoice` tu `startCall()` / `playTestAudio()`, hoac vua nhan tieng nguoi trong 250 ms).
+import { sendPanelAudio } from './audioOut.js';
+// (09/12/2026) `callHold` nay song trong src/audioOut.ts — tai xuat o day de moi cho doc cu (`callHold.has(...)`) khong
+// phai doi; viec CHAN that su nam trong `sendPanelAudio()`.
+export { callHold } from './audioOut.js';
 
 const PULSE_MONITOR_SOURCE = process.env.PULSE_AUDIO_MONITOR || 'chrome_out.monitor';
 const AUDIO_SAMPLE_RATE = 16000;
@@ -36,8 +44,9 @@ let captureProc: ChildProcessWithoutNullStreams | null = null;
 let stopping = false;
 let restartTimer: NodeJS.Timeout | null = null;
 const subscribers = new Set<string>();
-/** (14/10/2026) INTERCOM: man dang trong cuoc goi — KHONG gui tieng Chrome (tieng cuoc goi di rieng, src/callBridge.ts). */
-export const callHold = new Set<string>();
+/** (14/10/2026) INTERCOM: man dang trong cuoc goi — KHONG gui tieng Chrome (tieng cuoc goi di rieng, src/callBridge.ts).
+ *  (09/12/2026) Tap nay nay song trong src/audioOut.ts (`callHold`, dem tham chieu qua `holdVoice`/`releaseVoice`) va
+ *  duoc tai xuat o day de moi cho doc cu van dung; viec CHAN that su nam trong `sendPanelAudio()`. */
 
 // (23/09/2026 v8) SUA LOI THAT DA GAP: truoc day feedChunk() gui NGAY moi
 // khi ffmpeg co du lieu — nhung PulseAudio/ffmpeg khong giao du lieu deu,
@@ -79,6 +88,22 @@ function accumulateFromSource(chunk: Buffer): void {
   if (jitterBuf.length > diag.maxBufBytes) diag.maxBufBytes = jitterBuf.length;
 }
 
+/**
+ * (09/12/2026) MOT CHO DUY NHAT gui tieng Chrome/PulseAudio xuong loa mot man.
+ *
+ * Day chinh la "duong gui audio thu hai" da tim ra khi do tren P4 (49 KB/s thay vi 32 KB/s khi chay
+ * `POST /call/test/play`): truoc day ham nay goi thang `broadcaster.sendAudioFrame(id, frame)` va chi bi chan boi
+ * `callHold` — ma `callHold` chi duoc dat trong `startCall()`, con phep do phat tep mau thi khong mo call record.
+ *
+ * Nay di qua cong `sendPanelAudio(id, frame, 'web')` (src/audioOut.ts):
+ *   - man dang GIU loa cho tieng nguoi (`holdVoice` tu `startCall()` / `playTestAudio()`) -> TU CHOI (`false`);
+ *   - man VUA nhan tieng nguoi (<= 250 ms) -> cung TU CHOI (khong xen tieng Chrome giua hai khung tieng nguoi);
+ *   - moi khung duoc dem vao nguon `web` cua dong `[audiosrc]`, nen "nguon thu hai" tro thanh so lieu do duoc.
+ */
+export function sendCapturedFrame(id: string, frame: Buffer): boolean {
+  return sendPanelAudio(id, frame, 'web');
+}
+
 function drainTick(): void {
   const now = Date.now();
   if (diag.lastTickMs) {
@@ -102,8 +127,11 @@ function drainTick(): void {
   while (jitterBuf.length >= FRAME_BYTES) {
     const frame = jitterBuf.subarray(0, FRAME_BYTES);
     jitterBuf = jitterBuf.subarray(FRAME_BYTES);
-    for (const id of subscribers) if (!callHold.has(id)) broadcaster.sendAudioFrame(id, frame);
-    diag.framesSent++;
+    // (09/12/2026) `framesSent` gio chi dem khung THUC SU xuong duoc loa (nguon `web` bi chan khi man dang co tieng
+    // nguoi) — nho vay dong `[audio-diag]` khong con bao "da gui" cho nhung khung bi tu choi.
+    let any = false;
+    for (const id of subscribers) if (sendCapturedFrame(id, frame)) any = true;
+    if (any) diag.framesSent++;
   }
 }
 
