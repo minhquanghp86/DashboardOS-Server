@@ -25,7 +25,7 @@ export const FRAME_BYTES = FRAME_SAMPLES * 2;         // 640
 // (05/12/2026) -18 -> -26 dBFS: do that tren P4 cho thay muc nham -18 dBFS lam loa nho cua may bi nen manh
 // (AGC day gain len +15..+24 dB roi limiter phai lam viec lien tuc) — tieng "to nhung rop", de kich vong lap am hoc
 // (loa P4 -> mic dien thoai -> "ru rit"). -26 dBFS = con du headroom cho loa + 14 dB dinh cua tieng noi.
-export const AGC_TARGET_DBFS = -26;
+export const AGC_TARGET_DBFS = -16;
 /** Gain len nhanh (5 ms) — tieng nho thanh ro ngay. */
 export const AGC_ATTACK_MS = 5;
 /** Gain xuong cham (200 ms) — khong "tho" am luong theo tung tu. */
