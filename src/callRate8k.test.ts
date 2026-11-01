@@ -82,6 +82,7 @@ beforeEach(() => {
   wavPcm = makeWav(5).subarray(44);                        // 5 khung = 100 ms
   fs.writeFileSync(path.join(dir, 'short.wav'), makeWav(5));
   fs.writeFileSync(path.join(dir, 'one.wav'), makeWav(1));
+  fs.writeFileSync(path.join(dir, 'ten.wav'), makeWav(10));  // 10 khung = 200 ms (do so goi/giay)
   process.env.CCR_TEST_AUDIO_DIR = dir;
   screens.list = [{ id: DEV, w: 1024, h: 600, cam: true, sd: false, spk: true, mic: true }];
 });
@@ -166,5 +167,39 @@ describe('CCR_CALL_RATE8K=1 — duong xuong loa man phat 8 kHz', () => {
       delete process.env.CCR_CALL_RATE8K;
       delete process.env.CCR_CALL_STEREO;
     }
+  });
+});
+
+// (08/12/2026) SO GOI/GIAY KHONG DUOC PHU THUOC `CCR_CALL_RATE8K` — loi do tren P4: `1750 goi / 30 s` = 58 goi/s
+// (le ra 50) va 42,7 KB/s (le ra 32 KB/s) vi bo dem nhip bi cau hinh `frameBytes` 320/640 trong khi du lieu push vao
+// van la khung 640 B -> mot khung 20 ms bi chia lam 2 goi. Cac bai duoi do tren DUONG THAT (`POST /call/test/play`
+// -> sendToSpeaker -> pacer -> broadcaster.sendAudioFrame) voi dong ho THAT (10 khung = 200 ms).
+describe('so goi/giay khong doi khi bat/tat 8 kHz (1 goi / 20 ms)', () => {
+  it('10 khung -> 10 goi (~50 goi/giay) o CA 16 kHz lan 8 kHz, moi goi DUNG frameBytes', async () => {
+    for (const rate8k of [false, true]) {
+      const { bridge, sent } = await loadBridge({ rate8k, stereo: true });
+      const r = await play(bridge, 'ten.wav', '&agc=0&eq=0');
+      const tag = `rate8k=${rate8k}`;
+      expect(r.code, tag).toBe(200);
+      expect(r.body.frames, tag).toBe(10);
+      expect(sent.length, tag).toBe(10);                                  // 10 goi cho 10 khung — khong phai 20
+      expect(r.body.dropped, tag).toBe(0);
+      expect(sent.every((b) => b.length === r.body.frameBytes), tag).toBe(true);   // khong co goi ngan / goi doi
+      expect(r.body.ms, tag).toBeGreaterThanOrEqual(175);                 // 10 goi = 9 khoang x 20 ms = 180 ms
+      expect((10 * 1000) / r.body.ms, tag).toBeLessThanOrEqual(55);       // ~50 goi/giay, khong phai 58/100
+      expect(r.body.frameBytes, tag).toBe(rate8k ? 640 : 1280);           // 8 kHz stereo = 16 kHz mono = 640
+    }
+  });
+
+  it('du lieu xuong man KHONG chia het frameBytes -> CAT NHO truoc khi push (moi goi <= frameBytes, van 1 goi/nhip)', async () => {
+    const { bridge, sent } = await loadBridge({ rate8k: false, stereo: true });   // frameBytes = 1280
+    bridge.framePacer.forget(DEV);
+    // 960 B mono = 30 ms (khong phai 20 ms) -> 1920 B stereo = 1 goi 1280 B + 1 manh 640 B.
+    bridge.sendToSpeaker(DEV, Buffer.alloc(960, 1), { agc: false, eq: false });
+    expect(bridge.framePacer.stats(DEV).queued).toBe(2);                  // da chia nho TRUOC khi push
+    await new Promise((ok) => setTimeout(ok, 80));
+    expect(sent.map((b) => b.length)).toEqual([1280, 640]);               // khong co goi nao LON hon frameBytes
+    expect(bridge.framePacer.stats(DEV).queued).toBe(0);
+    bridge.framePacer.forget(DEV);
   });
 });

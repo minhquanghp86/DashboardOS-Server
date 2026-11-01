@@ -17,7 +17,7 @@
 // theo mot DONG HO TUYET DOI (moc t0 + k*20 ms, khong cong don sai so cua setTimeout), va DONG GIAY khi socket da don:
 //   - tran hang doi `maxQueueFrames` (mac dinh 5 = 100 ms): qua thi bo khung CU NHAT -> do tre khong tich luy;
 //   - tran `maxBacklogBytes` (bufferedAmount cua socket): socket dang nghen thi bo khung, khong day them;
-//   - bu toi da `maxCatchUp` khung moi nhip khi event loop bi tre (khong xa hang loat 20 khung mot luc).
+//   - MOT goi moi nhip, khong bao gio phat bu (08/12/2026: da bo han `maxCatchUp`).
 // Tat de A/B (quay lai dung hanh vi cu "gui ngay"): `CCR_CALL_PACE=0` (xem src/callBridge.ts).
 //
 // Module THUAN (khong import gi cua server, nhan `send`/`backlog`/dong ho qua tham so) nen test duoc bang vitest:
@@ -28,8 +28,23 @@
 //   - 1280 = 20 ms PCM s16le STEREO 16 kHz (L = R) -> nhanh XUONG LOA MAN (xem src/audioStereo.ts).
 // `frameBytes` CHI quyet dinh MOT lan `push()` dai bao nhieu byte thi thanh MOT goi; dong ho van la MOT goi moi
 // `frameMs` ms. Vi vay 1280 byte/khung KHONG lam gui nhanh gap doi: 5 khung 1280 byte van ra tai 0/20/40/60/80 ms.
-// Neu de sai `frameBytes` (vd. 640 trong khi nhan 1280 byte) thi mot khung 20 ms bi chia thanh HAI goi 640 byte va
-// bo dem se ban hai goi moi nhip — dung cai phai tranh; src/callBridge.ts lay `SPEAKER_FRAME_BYTES` tu audioStereo.ts.
+//
+// (08/12/2026) SUA LOI DO DUOC TREN P4 THAT — "1 goi / 20 ms" la LUAT CUNG, khong con ngoai le:
+//   Log P4: `1750 goi / 30 s` = **58 goi/s** (le ra 50 goi/s = 20 ms/goi) va toc do vao loa do duoc **42,7 KB/s**
+//   thay vi 32 KB/s (16 kHz mono) => tran ring buffer 250 ms => `loa tu choi 319680 B` => nghe dut quang.
+//   Nguyen nhan: bo dem duoc cau hinh `frameBytes` (320 hoac 640) nhung du lieu `push()` van la khung **640 B**
+//   (PCM 16 kHz mono tu trang goi) => mot khung 20 ms bi chia thanh HAI goi 320 B, va `tick()` cu con gui toi
+//   `maxCatchUp` (= 2) goi trong MOT nhip => gap doi luu luong.
+//   Luat moi:
+//     - **dung MOT goi moi `frameMs` ms**, bat ke `frameBytes` la bao nhieu;
+//     - du lieu vao LON hon `frameBytes` -> phan du NAM LAI trong hang doi va ra dan o cac nhip sau (KHONG phat bu
+//       trong cung mot nhip) => nhip ra luon 50 goi/s;
+//     - BO HAN co che "catch-up phat nhieu goi/nhip" (`maxCatchUp` da bi xoa khoi `PacerOptions`);
+//     - event loop tre thi nhip sau muon hon chu KHONG ban lien tiep; dung hinh (tre >= `STALL_FRAMES` nhip = 60 ms)
+//       thi bo khung CU trong hang doi (tran hang doi giu nguyen) chu khong don chung lai.
+//   Vi vay dat SAI `frameBytes` khong con lam gui nhanh gap doi — no chi lam MAT bot khung (hang doi day -> bo khung
+//   cu), tuc la hanh vi an toan. src/callBridge.ts van phai dat `frameBytes` = so byte THAT cua mot goi tren duong
+//   xuong man (sau downsample/stereo) va push vao DUNG tung ay byte mot (xem `SPEAKER_WIRE_FRAME_BYTES`).
 
 /** 20 ms/khung — KHONG doi du mono hay stereo. */
 export const FRAME_MS = 20;
@@ -45,7 +60,20 @@ export interface PacerStats {
   queued: number;
 }
 
-export type DropReason = 'queue' | 'backlog' | 'send';
+/**
+ * Vi sao bo mot khung:
+ *   - `queue`   hang doi day (tran `maxQueueFrames` — bo khung CU NHAT, do tre khong tich luy);
+ *   - `backlog` socket nghen (bufferedAmount vuot tran);
+ *   - `send`    `send()` tu choi (socket dong);
+ *   - `late`    dung hinh: event loop tre >= `STALL_FRAMES` nhip -> bo khung CU thay vi phat bu.
+ */
+export type DropReason = 'queue' | 'backlog' | 'send' | 'late';
+
+/**
+ * (08/12/2026) Tre bao nhieu nhip thi coi la "dung hinh" va bo khung cu: 3 nhip = 60 ms.
+ * Duoi nguong nay chi la jitter cua `setTimeout` (1-2 ms) — van gui dung 1 goi/nhip, khong mat gi.
+ */
+const STALL_FRAMES = 3;
 
 export interface PacerOptions {
   /** Gui MOT khung 20 ms xuong thiet bi. Tra ve false = khong gui duoc (socket nghen/dong). */
@@ -57,13 +85,12 @@ export interface PacerOptions {
   maxQueueFrames?: number;
   /** Tran byte ton dong: vuot thi bo khung (mac dinh 32 KB ~ 1 s tieng). */
   maxBacklogBytes?: number;
-  /** So khung toi da gui trong MOT nhip khi bi tre (mac dinh 2). */
-  maxCatchUp?: number;
   /** false = gui ngay khi push (hanh vi CU, de A/B). */
   pace?: boolean;
   /**
    * So byte cua MOT khung tren duong xuong thiet bi (mac dinh 640 = 20 ms mono). Man stereo: 1280.
-   * Chi doi viec CHIA goi, khong doi nhip: luon MOT goi moi `frameMs` ms.
+   * CHI quyet dinh cach CHIA du lieu vao thanh tung goi — nhip luon la MOT goi moi `frameMs` ms
+   * (khong con `maxCatchUp`: xem ghi chu (08/12/2026) o dau tep).
    */
   frameBytes?: number;
   now?: () => number;
@@ -76,8 +103,15 @@ export interface PacerOptions {
 interface DeviceState {
   q: Buffer[];
   timer: unknown | null;
-  /** Moc (ms) cua khung KE TIEP theo lich tuyet doi; 0 = chua co moc (dang im). */
-  lastAt: number;
+  /**
+   * (08/12/2026) Moc (ms) SOM NHAT duoc phep gui goi KE TIEP — chinh la luoi tuyet doi t0 + k*frameMs.
+   * GIU NGUYEN khi hang doi rong (khong dat lai ve 0): neu dat lai thi mot lan `push()` den ngay sau khi hang doi
+   * vua rong se gui NGAY va tao ra HAI goi trong cung mot o 20 ms — dung cai lam P4 nhan gap doi luu luong.
+   * 0 = chua co moc (moi tao / sau `reset()`).
+   */
+  nextAt: number;
+  /** Moc hen gio dang cho (ms) — `now - dueAt` = nhip nay TRE bao nhieu (de biet co phai "dung hinh" khong). */
+  dueAt: number;
   frames: number;
   dropped: number;
 }
@@ -87,7 +121,6 @@ export class FramePacer {
   private readonly frameMs: number;
   private readonly maxQueueFrames: number;
   private readonly maxBacklogBytes: number;
-  private readonly maxCatchUp: number;
   private readonly pace: boolean;
   private readonly frameBytes: number;
   private readonly now: () => number;
@@ -98,7 +131,6 @@ export class FramePacer {
     this.frameMs = o.frameMs ?? FRAME_MS;
     this.maxQueueFrames = Math.max(1, o.maxQueueFrames ?? 5);
     this.maxBacklogBytes = Math.max(0, o.maxBacklogBytes ?? 32 * 1024);
-    this.maxCatchUp = Math.max(1, o.maxCatchUp ?? 2);
     this.pace = o.pace !== false;
     this.frameBytes = Math.max(2, o.frameBytes ?? FRAME_BYTES);
     this.now = o.now ?? Date.now;
@@ -106,7 +138,11 @@ export class FramePacer {
     this.clearT = o.clearTimeout ?? ((t) => clearTimeout(t as NodeJS.Timeout));
   }
 
-  /** Nhan PCM (1 hoac nhieu khung, doi dai tuy y) — chia khung 640 byte roi xep vao hang doi cua `dev`. */
+  /**
+   * Nhan PCM (1 hoac nhieu khung, doi dai tuy y) — chia thanh tung goi `frameBytes` ROI XEP VAO HANG DOI.
+   * (08/12/2026) Phan du KHONG duoc phat ngay: no nam trong hang doi va ra dan o cac nhip sau, moi nhip dung MOT goi
+   * (xem `tick()`), nho vay du lieu vao lon hon `frameBytes` khong lam nhip ra nhanh gap doi.
+   */
   push(dev: string, pcm: Buffer): void {
     const st = this.state(dev);
     for (let o = 0; o + 1 < pcm.length; o += this.frameBytes) {
@@ -134,7 +170,8 @@ export class FramePacer {
     if (!st) return;
     if (st.timer !== null) { this.clearT(st.timer); st.timer = null; }
     st.q.length = 0;
-    st.lastAt = 0;
+    st.nextAt = 0;                                     // lan push sau gui NGAY (khong giu luoi cu)
+    st.dueAt = 0;
     st.frames = 0;
     st.dropped = 0;
   }
@@ -158,47 +195,61 @@ export class FramePacer {
 
   private state(dev: string): DeviceState {
     let st = this.m.get(dev);
-    if (!st) { st = { q: [], timer: null, lastAt: 0, frames: 0, dropped: 0 }; this.m.set(dev, st); }
+    if (!st) { st = { q: [], timer: null, nextAt: 0, dueAt: 0, frames: 0, dropped: 0 }; this.m.set(dev, st); }
     return st;
   }
 
-  /** Dat hen gio cho lan gui KE TIEP theo moc tuyet doi `lastAt` (khong phai "20 ms ke tu bay gio"). */
+  /**
+   * Dat hen gio cho goi KE TIEP. Moc = `nextAt` (luoi tuyet doi), nhung khong bao gio hen o qua khu:
+   * im lang / nhip truoc TRE thi hen ngay bay gio (van chi MOT goi — xem `tick()`).
+   */
   private schedule(dev: string): void {
     const st = this.state(dev);
     const now = this.now();
-    if (!st.lastAt) st.lastAt = now;
-    const wait = Math.max(0, st.lastAt - now);
-    const t = this.setT(() => { st.timer = null; this.tick(dev); }, wait);
+    if (!st.nextAt) st.nextAt = now;                  // chua co moc: lan dau tinh tu bay gio
+    const at = Math.max(st.nextAt, now);              // moc da qua -> gui ngay (khong doi cho vo ich)
+    st.dueAt = at;
+    const t = this.setT(() => { st.timer = null; this.tick(dev); }, at - now);
     (t as { unref?: () => void }).unref?.();          // khong giu tien trinh song vi hen gio am thanh
     st.timer = t;
   }
 
+  /**
+   * (08/12/2026) MOT NHIP = MOT GOI. Khong con vong `while` phat bu: du hang doi con 20 khung thi moi nhip van chi ra
+   * dung MOT goi (cac khung con lai ra dan o cac nhip sau), nho vay nhip ra luon = 1/frameMs goi/s (50 goi/s).
+   * Event loop tre: gui 1 goi roi dat moc KE TIEP = bay gio + frameMs (khong ban lien tiep de "duoi kip"); dung hinh
+   * (tre >= `STALL_FRAMES` nhip) thi bo khung CU trong hang doi — tran hang doi giu nguyen — chu khong don chung lai.
+   */
   private tick(dev: string): void {
     const st = this.state(dev);
     const now = this.now();
-    // Im lang lau (khong co gi de gui): bo qua phan "bu" cua qua khu, coi nhu bat dau lai tu bay gio.
-    if (st.lastAt && now - st.lastAt > this.frameMs * this.maxCatchUp) st.lastAt = now;
-    let n = 0;
-    while (st.q.length && n < this.maxCatchUp && now >= st.lastAt - 1) {
-      const frame = st.q.shift()!;
-      if (this.o.backlog(dev) > this.maxBacklogBytes) {
+    if (!st.q.length) return;                      // khong con gi: `nextAt` GIU NGUYEN (luoi 1 goi/20 ms khong bi pha)
+
+    const late = st.dueAt ? now - st.dueAt : 0;    // nhip nay TRE bao nhieu so voi gio hen
+    if (late >= this.frameMs * STALL_FRAMES) {     // dung hinh: bo khung CU, giu lai it nhat MOT khung
+      const behind = Math.floor(late / this.frameMs);
+      for (let i = 0; i < behind && st.q.length > 1; i++) {
+        st.q.shift();
         st.dropped++;
-        this.o.onDrop?.(dev, 'backlog', st.q.length);
-      } else {
-        const ok = this.o.send(dev, frame);
-        if (ok === false) { st.dropped++; this.o.onDrop?.(dev, 'send', st.q.length); } else st.frames++;
+        this.o.onDrop?.(dev, 'late', st.q.length);
       }
-      st.lastAt += this.frameMs;
-      n++;
     }
-    if (st.q.length) {
-      // Vua phai BU (gui toi da maxCatchUp khung trong mot nhip): day moc ke tiep ra sau MOT khung de khong
-      // "don no" bang cach ban lien tiep (nhip sau lai gui 2 khung ngay lap tuc -> thanh bun no that su).
-      if (n >= this.maxCatchUp && st.lastAt < now + this.frameMs) st.lastAt = now + this.frameMs;
-      this.schedule(dev);
-      return;
+
+    const frame = st.q.shift()!;
+    if (this.o.backlog(dev) > this.maxBacklogBytes) {
+      st.dropped++;
+      this.o.onDrop?.(dev, 'backlog', st.q.length);
+    } else {
+      const ok = this.o.send(dev, frame);
+      if (ok === false) { st.dropped++; this.o.onDrop?.(dev, 'send', st.q.length); } else st.frames++;
     }
-    st.lastAt = 0;                                     // het khung: lan push sau gui ngay
+
+    // Luoi tuyet doi t0 + k*frameMs (khong cong don sai so); TRE qua mot nhip thi moc ke tiep = bay gio + frameMs
+    // (KHONG bu cac nhip da mat).
+    if (!st.nextAt) st.nextAt = now;
+    st.nextAt += this.frameMs;
+    if (st.nextAt <= now) st.nextAt = now + this.frameMs;
+    if (st.q.length) this.schedule(dev);
   }
 
   /** `pace: false` (A/B): gui TAT CA khung dang cho ngay lap tuc, khong hen gio — dung hanh vi CU. */
@@ -214,6 +265,7 @@ export class FramePacer {
       const ok = this.o.send(dev, frame);
       if (ok === false) { st.dropped++; this.o.onDrop?.(dev, 'send', st.q.length); } else st.frames++;
     }
-    st.lastAt = 0;
+    st.nextAt = 0;                                    // da xa het: lan push sau bat dau luoi moi tu bay gio
+    st.dueAt = 0;
   }
 }

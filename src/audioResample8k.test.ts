@@ -342,10 +342,11 @@ describe('bo dem nhip voi frameBytes = 320 (8 kHz mono)', () => {
     expect((bytes / (h.sent[h.sent.length - 1].at + 20)) * 1000).toBe(16000);   // 16 KB/s
   });
 
-  it('frameBytes = 320 nhung push 640 B (mot khung 20 ms o 8 kHz stereo) -> 2 goi/nhip', () => {
-    const h = harness({ frameBytes: 320 });
+  it('frameBytes = 320 nhung push 640 B (mot khung 20 ms o 8 kHz stereo) -> 2 goi o 0 va 20 ms, KHONG phai 2 goi/nhip', () => {
+    const h = harness({ frameBytes: 320, maxQueueFrames: 8 });
     h.pacer.push('p4', Buffer.alloc(640));
     h.advance(100);
-    expect(h.sent.map((s) => s.bytes)).toEqual([320, 320]);    // cau hinh SAI phai tranh (dung frameBytesFor(rate, kenh))
+    expect(h.sent.map((s) => s.bytes)).toEqual([320, 320]);       // cau hinh SAI phai tranh (dung frameBytesFor(rate, kenh))
+    expect(h.sent.map((s) => s.at)).toEqual([0, 20]);             // (08/12/2026) nhip VAN 20 ms/goi — khong gui gap doi
   });
 });

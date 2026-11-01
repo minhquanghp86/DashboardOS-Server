@@ -1,5 +1,5 @@
 name: "Dashboard OS Server"
-version: "2.9.320"
+version: "2.9.321"
 slug: "remote_webview_server"
 # (02/10/2026) Anh dung san tren ghcr (CI tag = version). Truoc day addon build tai may HA tu build.yaml + Dockerfile,
 # va Supervisor xuat ca anh Docker (~1,1 GB sau nen) vao moi ban sao luu; anh keo ve thi khong. build.yaml/Dockerfile
@@ -99,7 +99,10 @@ options:
   # nen moi goi 20 ms phai la 1280 B (truoc day 640 B mono chi la 10 ms stereo -> buffer loa luon day -> vut -> dut
   # quang). false = gui mono 640 B nhu cu (A/B tren cung mot tep mau).
   call_stereo: true
-  call_rate8k: true
+  # (07/12/2026) HA MAU 16 kHz -> 8 kHz (src/audioResample8k.ts): 640 B -> 320 B/20 ms, chong alias bang Butterworth
+  # bac 6. (08/12/2026) MAC DINH false (16 kHz) — phep do tren P4 cho thay loa tieu thu dung 16 kHz; nguyen nhan
+  # "dut quang" that su la bo dem nhip phat 2 goi/20 ms (da sua trong src/audioPacer.ts), khong phai tan so lay mau.
+  call_rate8k: false
   # (23/09/2026) /pw-data KHONG nam trong volume ben cua addon — mat het khi
   # container tao lai (moi lan update). /data la thu muc rieng cua addon nay
   # do Supervisor tu cap, LUON ben qua update/restart.
@@ -132,4 +135,6 @@ schema:
   dial_port: "port?"
   call_agc: "bool?"
   call_stereo: "bool?"
+  # (08/12/2026) Thieu khai bao nay thi Supervisor coi `call_rate8k` la option la (khong bat/tat duoc tren giao dien).
+  call_rate8k: "bool?"
   user_data_dir: str

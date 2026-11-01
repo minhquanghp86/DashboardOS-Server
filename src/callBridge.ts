@@ -160,24 +160,41 @@ export const framePacer = new FramePacer({
   // (06/12/2026) MOT goi 20 ms = 1280 byte khi bat stereo (640 khi tat) — nhip VAN 20 ms/goi, khong gui gap doi.
   // (07/12/2026) Khi bat 8 kHz (`CCR_CALL_RATE8K=1`) thi 320 byte (mono) / 640 (stereo): phai dung SO BYTE THAT,
   // neu khong mot khung 20 ms bi chia thanh 2 goi 640 B va bo dem ban 2 goi moi nhip (xem src/audioPacer.ts).
+  // (08/12/2026) `frameBytes` = SO BYTE THAT cua mot goi tren duong xuong man (sau downsample + stereo) va du lieu
+  // push vao duoc cat DUNG tung ay byte (`pushToPacer()`): bo dem luon phat 1 goi/20 ms, khong con chuyen "1 khung
+  // vao -> 2 goi ra" (loi do duoc tren P4: 58 goi/s, 42,7 KB/s thay vi 50 goi/s, 32 KB/s).
   frameBytes: SPEAKER_WIRE_FRAME_BYTES,
   maxQueueFrames: intEnv('CCR_CALL_PACE_QUEUE', 5) || 5,
   maxBacklogBytes: intEnv('CCR_CALL_PACE_BACKLOG', 32 * 1024),
   onDrop: (dev, reason, queued) => logDrop(dev, reason, queued),
 });
 
+/**
+ * (08/12/2026) Day PCM cua duong xuong man vao bo dem nhip SAU KHI da chia dung co mot goi:
+ *   - dai DUNG `SPEAKER_WIRE_FRAME_BYTES` -> push thang (truong hop binh thuong: mic 640 B -> stereo 1280 B);
+ *   - dai KHAC -> CAT NHO thanh tung goi `frameBytes` roi moi push, nho vay bo dem nhip chi con dung mot viec la
+ *     phat MOT goi moi 20 ms, khong phai tu chia lai du lieu.
+ *   - manh cuoi ngan hon mot goi (du lieu le) van duoc push NGAY, khong giu lai cho du byte: am thanh khong duoc phep
+ *     "ket" trong luc cho them du lieu, va nhip ra van la 1 goi/20 ms nen mot goi ngan khong lam doi toc do.
+ */
+function pushToPacer(dev: string, pcm: Buffer): void {
+  const fb = SPEAKER_WIRE_FRAME_BYTES;
+  if (pcm.length === fb) { framePacer.push(dev, pcm); return; }
+  for (let o = 0; o < pcm.length; o += fb) framePacer.push(dev, pcm.subarray(o, Math.min(pcm.length, o + fb)));
+}
+
 /** Bo dem khung BI BO theo tung man (log toi da 1 lan / 5 s de khong spam khi mang nghen keo dai). */
-const drops = new Map<string, { n: number; at: number; queue: number; backlog: number; send: number }>();
+const drops = new Map<string, { n: number; at: number; queue: number; backlog: number; send: number; late: number }>();
 function logDrop(dev: string, reason: DropReason, queued: number): void {
   const now = Date.now();
   let d = drops.get(dev);
-  if (!d) { d = { n: 0, at: 0, queue: 0, backlog: 0, send: 0 }; drops.set(dev, d); }
+  if (!d) { d = { n: 0, at: 0, queue: 0, backlog: 0, send: 0, late: 0 }; drops.set(dev, d); }
   d.n++;
   d[reason]++;
   if (now - d.at < 5000) return;
   d.at = now;
-  console.warn(`[audio] dev=${dev} bo ${d.n} khung (hang doi ${d.queue}, socket ${d.backlog}, gui loi ${d.send}) — dang cho ${queued} khung`);
-  d.n = 0; d.queue = 0; d.backlog = 0; d.send = 0;
+  console.warn(`[audio] dev=${dev} bo ${d.n} khung (hang doi ${d.queue}, socket ${d.backlog}, gui loi ${d.send}, dung hinh ${d.late}) — dang cho ${queued} khung`);
+  d.n = 0; d.queue = 0; d.backlog = 0; d.send = 0; d.late = 0;
 }
 
 if (!process.env.VITEST) {
@@ -302,6 +319,9 @@ export function applyGainDb(pcm: Buffer, gainDb: number): Buffer {
  *     3,4 kHz roi lay moi mau thu 2 (src/audioResample8k.ts), 640 B -> 320 B, van 20 ms — de do gia thuyet "I2S cua
  *     loa P4 chay 8 kHz" (loa chi tieu thu ~16 KB/s trong khi server gui 32 KB/s). MAC DINH TAT. Ha mau tren MONO
  *     (truoc khi nhan doi kenh) vi bo loc/bo mau chi co nghia voi mot kenh.
+ *   - (08/12/2026) `frameBytes` cua bo dem nhip PHAI bang SO BYTE THAT cua mot goi tren duong xuong man (sau ha mau
+ *     + nhan doi kenh) va du lieu push vao duoc cat dung tung ay byte (`pushToPacer()`), nen bo dem luon phat dung
+ *     MOT goi moi 20 ms — "mot khung vao -> hai goi ra" (58 goi/s, 42,7 KB/s do duoc tren P4) khong con xay ra.
  *   - Tat AGC bang env CCR_CALL_AGC=0 (A/B: so sanh truc tiep tren cung mot cuoc goi).
  *   - (31/10/2026) DO MUC THAT tai day: `in` = RMS truoc AGC, `out` = RMS sau AGC, `peak` = dinh sau limiter,
  *     `gain` = gain hien tai (src/audioMeter.ts in ra mot dong log moi 2 s cho moi man dang trong cuoc goi).
@@ -337,7 +357,10 @@ export function sendToSpeaker(dev: string, pcm: Buffer, opts?: SpeakerOpts): voi
   // Trang thai loc lay theo TUNG man (`resamplerOf`) -> khong re o bien khung.
   const mono8 = RATE8K_ENABLED ? downsample2(out, resamplerOf(dev)) : out;
   const wire = STEREO_ENABLED ? monoToStereo(mono8) : mono8;
-  framePacer.push(dev, wire);                               // (05/12/2026) 20 ms/khung, khong bun no
+  // (08/12/2026) PUSH SAU KHI CHIA DUNG CO MOT GOI: bo dem nhip chi phat 1 goi/20 ms, nen du lieu vao phai duoc cat
+  // nho theo `SPEAKER_WIRE_FRAME_BYTES` TRUOC khi push — xem `pushToPacer()`. Truoc day push thang `wire` nen khi
+  // `frameBytes` = 320/640 ma du lieu la 640 B thi mot khung 20 ms bi chia 2 va loa nhan gap doi.
+  pushToPacer(dev, wire);
   if (m) {
     // (06/12/2026) Do muc tren MONO (truoc khi nhan doi kenh) -> dBFS giu nguyen y nghia, so duoc voi cac lan truoc.
     m.add({ inDb, outDb: db(rms(out)), peakDb: db(peakOf(out) / 32768), gainDb,
