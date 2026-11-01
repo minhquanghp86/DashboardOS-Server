@@ -19,6 +19,8 @@
 //                                      phat WAV 16 kHz mono s16le qua DUNG duong `sendToSpeaker()`, nhip 20 ms/khung
 //                                      (src/audioPacer.ts), tra {ok, dev, frames, dropped, ms}. Chi loopback / trang LAN
 //                                      cung origin (KHONG qua ingress) — day la duong bom tieng ra loa that.
+//                                      (06/12/2026) Nhanh xuong man gui STEREO 1280 B/goi (L = R, xem src/audioStereo.ts):
+//                                      tep mono 640 B -> goi 1280 B, van 20 ms/goi (`CCR_CALL_STEREO=0` -> mono nhu cu).
 import fs from 'node:fs';
 import http from 'node:http';
 import type { Duplex } from 'node:stream';
@@ -27,6 +29,9 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { newAgcState, processPcm, AGC_ENABLED, AGC_SILENCE_DBFS, peakOf, type AgcState } from './audioAgc.js';
 // (05/12/2026) NHIP GUI DEU 20 ms/khung xuong loa man (burst -> tran ring buffer 250 ms cua P4 -> "giat cuc").
 import { FramePacer, type DropReason } from './audioPacer.js';
+// (06/12/2026) MONO -> STEREO (L = R) cho nhanh xuong LOA MAN: mixer cua P4 khai 2 kenh nen 640 B mono chi la
+// 10 ms stereo -> buffer loa luon day -> vut bot -> nghe dut quang. 1280 B/20 ms moi dung. Tat: CCR_CALL_STEREO=0.
+import { monoToStereo, SPEAKER_FRAME_BYTES, STEREO_ENABLED } from './audioStereo.js';
 // (05/12/2026) EQ bu loa nho cua P4: high-pass 120 Hz + presence +4 dB @ 1,5 kHz (env CCR_CALL_EQ de A/B).
 import { EQ_ENABLED, eqApply, newEqState, type EqState } from './callEq.js';
 // (05/12/2026) Do muc tieng that (web -> man): mot dong log moi 2 s, xem src/audioMeter.ts.
@@ -42,7 +47,9 @@ import { isLanBrowser, isLoopback } from './requestOrigin.js';
 import { ControlField } from './protocol.js';
 
 export const SAMPLE_RATE = 16000;
-export const FRAME_BYTES = 640;   // 20 ms
+/** 20 ms PCM s16le MONO 16 kHz — dung cho `sendToDevice()` (trang thu / bip do vong lap). Duong xuong man
+ *  (`sendToSpeaker`) gui 1280 byte stereo khi bat `CCR_CALL_STEREO` (xem src/audioStereo.ts). */
+export const FRAME_BYTES = 640;   // 20 ms mono
 
 interface Leg {
   dev: string;
@@ -115,6 +122,8 @@ export const framePacer = new FramePacer({
   send: (dev, frame) => sendFrameToDevice(dev, frame),
   backlog: (dev) => broadcaster.backlogBytes(dev),
   pace: PACE_ENABLED,
+  // (06/12/2026) MOT goi 20 ms = 1280 byte khi bat stereo (640 khi tat) — nhip VAN 20 ms/goi, khong gui gap doi.
+  frameBytes: SPEAKER_FRAME_BYTES,
   maxQueueFrames: intEnv('CCR_CALL_PACE_QUEUE', 5) || 5,
   maxBacklogBytes: intEnv('CCR_CALL_PACE_BACKLOG', 32 * 1024),
   onDrop: (dev, reason, queued) => logDrop(dev, reason, queued),
@@ -243,7 +252,10 @@ export function applyGainDb(pcm: Buffer, gainDb: number): Buffer {
  *   - (05/12/2026) TRUOC AGC co EQ (src/callEq.ts): high-pass 120 Hz + presence +4 dB @ 1,5 kHz, `CCR_CALL_EQ=0` de tat.
  *   - (05/12/2026) SAU AGC di vao bo dem nhip 20 ms/khung (src/audioPacer.ts), `CCR_CALL_PACE=0` = gui ngay nhu cu.
  *   - Khong im lang: khung < -60 dBFS di nguyen (khong khuech dai nhieu nen phong).
- *   - Khong them do tre trong xu ly tung khung va KHONG doi kich thuoc goi (vao 640 byte, ra 640 byte).
+ *   - (06/12/2026) KHONG con giu nguyen kich thuoc goi tren duong xuong MAN: AGC/EQ van xu ly MONO (vao 640 byte,
+ *     ra 640 byte — do muc `[audio] in/out` tinh tren mono), roi `monoToStereo()` nhan doi kenh (L = R) thanh
+ *     **1280 byte = 20 ms stereo** truoc bo dem nhip (mixer P4 khai 2 kenh — xem src/audioStereo.ts).
+ *     `CCR_CALL_STEREO=0` -> gui mono 640 byte nhu cu (A/B). Web <-> web khong di qua day nen van mono.
  *   - Tat AGC bang env CCR_CALL_AGC=0 (A/B: so sanh truc tiep tren cung mot cuoc goi).
  *   - (31/10/2026) DO MUC THAT tai day: `in` = RMS truoc AGC, `out` = RMS sau AGC, `peak` = dinh sau limiter,
  *     `gain` = gain hien tai (src/audioMeter.ts in ra mot dong log moi 2 s cho moi man dang trong cuoc goi).
@@ -256,7 +268,7 @@ export function sendToSpeaker(dev: string, pcm: Buffer, opts?: SpeakerOpts): voi
   const eqOn = opts?.eq ?? EQ_ENABLED;
   const agcOn = opts?.agc ?? AGC_ENABLED;
   const extraDb = opts?.gainDb ?? 0;
-  let out: Buffer = pcm;
+  let out: Buffer = pcm;                                    // MONO s16le 16 kHz tren TOAN BO duong xu ly
   let gainDb = 0;
   if (eqOn) {                                               // (05/12/2026) EQ TRUOC AGC: dinh tang do presence bi limiter chan
     let st = eqs.get(dev);
@@ -270,8 +282,13 @@ export function sendToSpeaker(dev: string, pcm: Buffer, opts?: SpeakerOpts): voi
     out = processPcm(out, st);
     gainDb = st.gainDb;
   }                                                         // AGC tat -> passthrough y nguyen byte (A/B)
-  framePacer.push(dev, out);                                // (05/12/2026) 20 ms/khung, khong bun no
+  // (06/12/2026) MONO -> STEREO SAU AGC, TRUOC bo dem nhip: moi mau lap 2 lan (L = R), 640 B -> 1280 B, do dai
+  // THOI GIAN khong doi (van 20 ms). Ly do: mixer cua P4 khai 2 kenh — 640 B mono chi la 10 ms stereo nen buffer
+  // loa luon day va bi vut. `CCR_CALL_STEREO=0` -> gui mono nhu cu (A/B). Chi nhanh xuong MAN di qua day.
+  const wire = STEREO_ENABLED ? monoToStereo(out) : out;
+  framePacer.push(dev, wire);                               // (05/12/2026) 20 ms/khung, khong bun no
   if (m) {
+    // (06/12/2026) Do muc tren MONO (truoc khi nhan doi kenh) -> dBFS giu nguyen y nghia, so duoc voi cac lan truoc.
     m.add({ inDb, outDb: db(rms(out)), peakDb: db(peakOf(out) / 32768), gainDb,
       silent: inDb < AGC_SILENCE_DBFS, frames: frameCount(pcm.length) });   // 640 byte = 1 khung 20 ms -> ~100 khung/2 s
   }
@@ -359,8 +376,10 @@ async function loopTest(dev: string, aec: boolean): Promise<unknown> {
  * micro cua dien thoai. Bo cuoc goi ra khoi phep do thi moi lan chay lai cho ra cung mot dau vao -> so sanh duoc
  * `frames`/`dropped`/`[audio]`/`[audio-diag]` giua hai lan bat/tat AGC, EQ, pace.
  *
- * Di DUNG duong that: `sendToSpeaker()` (AGC -> EQ -> pacer -> broadcaster.sendAudioFrame), KHONG tao call record
- * (`startCall` khong duoc goi => khong co `[call]`, khong bat ControlField.Call, khong dung mic cua man).
+ * Di DUNG duong that: `sendToSpeaker()` (EQ -> AGC -> MONO->STEREO -> pacer -> broadcaster.sendAudioFrame), KHONG
+ * tao call record (`startCall` khong duoc goi => khong co `[call]`, khong bat ControlField.Call, khong dung mic cua
+ * man). Tep mau van la MONO 16 kHz (dung dinh dang trang goi gui len) nen bai do di qua dung chuoi xu ly that:
+ * 640 B mono vao -> **1280 B stereo ra**, 20 ms/goi (xem src/audioStereo.ts).
  * Man phai dang ket noi WS voi server (`connectedScreens()`), neu khong `broadcaster.sendAudioFrame` khong co socket
  * nao de gui -> `dropped` tang, va do la thong tin that (khong phai loi).
  */
@@ -378,6 +397,10 @@ export interface TestPlayResult {
   agc: boolean;
   eq: boolean;
   gain: number;
+  /** (06/12/2026) Duong xuong man gui STEREO (1280 B/goi) hay MONO (640 B/goi, A/B `CCR_CALL_STEREO=0`). */
+  stereo: boolean;
+  /** So byte cua MOT goi gui xuong man (1280 stereo / 640 mono). */
+  frameBytes: number;
   /** So nhip bi tre qua muc bu (event loop cua server bi chan) — "giat do server". */
   late: number;
 }
@@ -432,9 +455,15 @@ export async function playTestAudio(o: TestPlayOptions): Promise<TestPlayResult>
     const last = meters.get(o.dev)?.flush(Date.now());     // chot cua so cuoi (< 2 s) de khong mat so lieu
     if (last) console.log(last.line);
     const ms = Date.now() - t0;
+    // (06/12/2026) Log kem `stereo=`/`frame=` de bai do khang dinh DUNG dinh dang goi da gui (1280 B/20 ms stereo
+    // so voi 640 B mono truoc day) — day la bang chung A/B, khong phai suy doan tu ma nguon.
     console.log(`[test] play dev=${o.dev} file=${name} frames=${st.frames} dropped=${st.dropped} ` +
-      `loop=${loop} agc=${agcOn ? 1 : 0} eq=${eqOn ? 1 : 0} gain=${gainDb} ms=${ms} late=${r.lateTicks}`);
-    return { ok: true, dev: o.dev, file: name, frames: st.frames, dropped: st.dropped, ms, loop, agc: agcOn, eq: eqOn, gain: gainDb, late: r.lateTicks };
+      `loop=${loop} agc=${agcOn ? 1 : 0} eq=${eqOn ? 1 : 0} gain=${gainDb} ` +
+      `stereo=${STEREO_ENABLED ? 1 : 0} frame=${framePacer.bytesPerFrame} ms=${ms} late=${r.lateTicks}`);
+    return {
+      ok: true, dev: o.dev, file: name, frames: st.frames, dropped: st.dropped, ms, loop,
+      agc: agcOn, eq: eqOn, gain: gainDb, stereo: STEREO_ENABLED, frameBytes: framePacer.bytesPerFrame, late: r.lateTicks,
+    };
   } finally {
     playing.delete(o.dev);
     testMeters.delete(o.dev);

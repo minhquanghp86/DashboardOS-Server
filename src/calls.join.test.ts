@@ -140,8 +140,10 @@ describe('dien thoai vao cuoc goi bang call-web.html?call=', () => {
 
     // 4b. TIENG DIEN THOAI -> MAN: PCM trang gui len -> loa man (sendAudioFrame chia khung 20 ms).
     // (31/10/2026) Nhanh xuong MAN di qua AGC/limiter (`sendToSpeaker` -> src/audioAgc.ts) nen mau PCM KHONG con
-    // giong byte voi dau vao, nhung KHONG duoc doi kich thuoc goi (320 byte/khung, 20 ms) va khong duoc thanh im
-    // lang. Chieu web <-> web van nguyen byte (kiem o src/calls.phonephone.test.ts).
+    // giong byte voi dau vao, nhung KHONG duoc thanh im lang. Chieu web <-> web van nguyen byte (kiem o
+    // src/calls.phonephone.test.ts).
+    // (06/12/2026) MONO -> STEREO (L = R) SAU AGC: 320 byte mono vao -> 640 byte stereo ra (xem src/audioStereo.ts).
+    // Do dai THOI GIAN khong doi (320 mau = 10 ms, van 1 khung), chi moi mau duoc lap sang 2 kenh.
     const spy = vi.spyOn(broadcaster, 'sendAudioFrame');
     const up = Buffer.alloc(1 + 320);
     up[0] = 1;
@@ -151,9 +153,10 @@ describe('dien thoai vao cuoc goi bang call-web.html?call=', () => {
     expect(spy).toHaveBeenCalled();
     expect(spy.mock.calls[0][0]).toBe(PANEL);
     const toPanel = spy.mock.calls[0][1];
-    expect(toPanel.length).toBe(320);                                       // khung 20 ms giu nguyen
-    expect(toPanel.equals(Buffer.from(up.subarray(1)))).toBe(false);        // co AGC: khac byte tho
+    expect(toPanel.length).toBe(640);                                       // 320 mono -> 640 stereo (2 kenh)
+    expect(toPanel.equals(Buffer.from(up.subarray(1)))).toBe(false);        // co AGC + stereo: khac byte tho
     expect(toPanel.some((b) => b !== 0)).toBe(true);                        // van co tieng, khong bi tat
+    for (let i = 0; i < 160; i++) expect(toPanel.readInt16LE(i * 4)).toBe(toPanel.readInt16LE(i * 4 + 2));  // L = R
 
     // 5. "Kết thúc" tren dien thoai -> trang nhan 'ended', cuoc goi ket thuc
     expect((await post(`/app/hangup?phone=${PHONE}&call=${callId}`)).code).toBe(200);

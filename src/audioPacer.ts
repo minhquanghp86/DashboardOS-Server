@@ -22,9 +22,18 @@
 //
 // Module THUAN (khong import gi cua server, nhan `send`/`backlog`/dong ho qua tham so) nen test duoc bang vitest:
 // src/audioPacer.test.ts — nhip 20 ms, khong bun no, tran hang doi, tran bufferedAmount, che do khong pace.
+//
+// (06/12/2026) `frameBytes` CAU HINH DUOC — nhip thi KHONG doi, luon 20 ms/nhip:
+//   - 640  = 20 ms PCM s16le MONO 16 kHz  -> web <-> web, che do A/B `CCR_CALL_STEREO=0` (mac dinh cua module);
+//   - 1280 = 20 ms PCM s16le STEREO 16 kHz (L = R) -> nhanh XUONG LOA MAN (xem src/audioStereo.ts).
+// `frameBytes` CHI quyet dinh MOT lan `push()` dai bao nhieu byte thi thanh MOT goi; dong ho van la MOT goi moi
+// `frameMs` ms. Vi vay 1280 byte/khung KHONG lam gui nhanh gap doi: 5 khung 1280 byte van ra tai 0/20/40/60/80 ms.
+// Neu de sai `frameBytes` (vd. 640 trong khi nhan 1280 byte) thi mot khung 20 ms bi chia thanh HAI goi 640 byte va
+// bo dem se ban hai goi moi nhip — dung cai phai tranh; src/callBridge.ts lay `SPEAKER_FRAME_BYTES` tu audioStereo.ts.
 
-/** 20 ms/khung: 640 byte PCM s16le mono 16 kHz. */
+/** 20 ms/khung — KHONG doi du mono hay stereo. */
 export const FRAME_MS = 20;
+/** Mac dinh: 640 byte = 20 ms PCM s16le MONO 16 kHz (web <-> web). Man stereo dung 1280 (xem src/audioStereo.ts). */
 export const FRAME_BYTES = 640;
 
 export interface PacerStats {
@@ -52,6 +61,10 @@ export interface PacerOptions {
   maxCatchUp?: number;
   /** false = gui ngay khi push (hanh vi CU, de A/B). */
   pace?: boolean;
+  /**
+   * So byte cua MOT khung tren duong xuong thiet bi (mac dinh 640 = 20 ms mono). Man stereo: 1280.
+   * Chi doi viec CHIA goi, khong doi nhip: luon MOT goi moi `frameMs` ms.
+   */
   frameBytes?: number;
   now?: () => number;
   setTimeout?: (fn: () => void, ms: number) => unknown;
@@ -87,7 +100,7 @@ export class FramePacer {
     this.maxBacklogBytes = Math.max(0, o.maxBacklogBytes ?? 32 * 1024);
     this.maxCatchUp = Math.max(1, o.maxCatchUp ?? 2);
     this.pace = o.pace !== false;
-    this.frameBytes = o.frameBytes ?? FRAME_BYTES;
+    this.frameBytes = Math.max(2, o.frameBytes ?? FRAME_BYTES);
     this.now = o.now ?? Date.now;
     this.setT = o.setTimeout ?? ((fn, ms) => setTimeout(fn, ms));
     this.clearT = o.clearTimeout ?? ((t) => clearTimeout(t as NodeJS.Timeout));
@@ -134,6 +147,9 @@ export class FramePacer {
 
   /** So thiet bi dang co trang thai (chan doan ro ri). */
   get size(): number { return this.m.size; }
+
+  /** So byte cua MOT khung dang dung (640 mono / 1280 stereo) — de log/chan doan va test. */
+  get bytesPerFrame(): number { return this.frameBytes; }
 
   /** Dung hen gio cua moi thiet bi (dung trong test / khi tat server). */
   stopAll(): void {

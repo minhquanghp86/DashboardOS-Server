@@ -1,5 +1,5 @@
 name: "Dashboard OS Server"
-version: "2.9.316"
+version: "2.9.317"
 slug: "remote_webview_server"
 # (02/10/2026) Anh dung san tren ghcr (CI tag = version). Truoc day addon build tai may HA tu build.yaml + Dockerfile,
 # va Supervisor xuat ca anh Docker (~1,1 GB sau nen) vao moi ban sao luu; anh keo ve thi khong. build.yaml/Dockerfile
@@ -95,6 +95,10 @@ options:
   # (31/10/2026) AGC + limiter cho tieng dien thoai -> loa man P4 (src/audioAgc.ts): dua muc am luong ve -18 dBFS
   # roi chan dinh -1 dBFS. false = tat han (A/B, nghe lai dung nhu cu).
   call_agc: true
+  # (06/12/2026) MONO -> STEREO (L = R) cho nhanh xuong LOA MAN P4 (src/audioStereo.ts): mixer cua P4 khai 2 kenh
+  # nen moi goi 20 ms phai la 1280 B (truoc day 640 B mono chi la 10 ms stereo -> buffer loa luon day -> vut -> dut
+  # quang). false = gui mono 640 B nhu cu (A/B tren cung mot tep mau).
+  call_stereo: true
   # (23/09/2026) /pw-data KHONG nam trong volume ben cua addon — mat het khi
   # container tao lai (moi lan update). /data la thu muc rieng cua addon nay
   # do Supervisor tu cap, LUON ben qua update/restart.
@@ -126,4 +130,5 @@ schema:
   cast_enabled: "bool?"
   dial_port: "port?"
   call_agc: "bool?"
+  call_stereo: "bool?"
   user_data_dir: str

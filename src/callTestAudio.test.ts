@@ -33,6 +33,8 @@ vi.mock('./deviceManager.js', async (importOriginal) => {
 import { broadcaster } from './deviceManager.js';
 import { handleCallApi } from './callBridge.js';
 import { FRAME_BYTES } from './testAudio.js';
+// (06/12/2026) Nhanh xuong man gui STEREO 1280 B/goi (L = R) — xem src/audioStereo.ts.
+import { MONO_FRAME_BYTES, STEREO_FRAME_BYTES, stereoToMono } from './audioStereo.js';
 
 const DEV = 'p4-bep';
 
@@ -83,6 +85,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.CCR_TEST_AUDIO_DIR;
+  delete process.env.CCR_CALL_STEREO;          // (06/12/2026) test A/B khong duoc ro ri sang test khac
   fs.rmSync(dir, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
@@ -112,11 +115,30 @@ describe('POST /call/test/play', () => {
     expect(r.body.frames).toBe(0);
     expect(r.body.dropped).toBe(5);                        // khong gui duoc khung nao
     expect(r.body.ms).toBeGreaterThanOrEqual(80);          // 5 khung x 20 ms = 100 ms (nhip that, khong bun no)
+    // (06/12/2026) So lieu tra ve noi RO dinh dang goi da gui: stereo 1280 B/20 ms (truoc day 640 B mono).
+    expect(r.body.stereo).toBe(true);
+    expect(r.body.frameBytes).toBe(STEREO_FRAME_BYTES);
     const line = log.mock.calls.map((c) => String(c[0])).find((s) => s.startsWith('[test] play'));
-    expect(line).toBe(`[test] play dev=${DEV} file=short.wav frames=0 dropped=5 loop=1 agc=1 eq=1 gain=0 ms=${r.body.ms} late=0`);
+    expect(line).toBe(`[test] play dev=${DEV} file=short.wav frames=0 dropped=5 loop=1 agc=1 eq=1 gain=0 stereo=1 frame=1280 ms=${r.body.ms} late=0`);
   });
 
-  it('gui duoc: frames = so khung, moi goi 640 byte, nhip 20 ms (nhan ban AGC/EQ mac dinh)', async () => {
+  it('TICH HOP: 1 khung mono 640 B -> goi gui xuong man 1280 B (L = R), nhip 20 ms', async () => {
+    const got: Buffer[] = [];
+    vi.spyOn(broadcaster, 'sendAudioFrame').mockImplementation((_dev: string, pcm: Buffer) => { got.push(Buffer.from(pcm)); return true; });
+    vi.spyOn(console, 'log').mockImplementation(() => { });
+    // Moi khung cua tep mau la 640 B mono 20 ms (agc=0&eq=0 -> duong di y nguyen byte, de so sanh chinh xac).
+    fs.writeFileSync(path.join(dir, 'one.wav'), makeWav(1));
+    const r = await call('POST', `/call/test/play?dev=${DEV}&file=one.wav&agc=0&eq=0`);
+    expect(r.code).toBe(200);
+    expect(r.body.frames).toBe(1);
+    expect(got.length).toBe(1);
+    expect(got[0].length).toBe(STEREO_FRAME_BYTES);                    // 640 mono -> 1280 stereo
+    expect(got[0].length).toBe(MONO_FRAME_BYTES * 2);
+    expect(stereoToMono(got[0]).equals(wavPcm.subarray(0, FRAME_BYTES))).toBe(true);   // kenh trai = mono goc
+    for (let i = 0; i < 320; i++) expect(got[0].readInt16LE(i * 4)).toBe(got[0].readInt16LE(i * 4 + 2));  // L = R
+  });
+
+  it('gui duoc: frames = so khung, moi goi 1280 byte (20 ms stereo), nhip 20 ms (AGC/EQ mac dinh)', async () => {
     const sent: number[] = [];
     vi.spyOn(broadcaster, 'sendAudioFrame').mockImplementation((_dev: string, pcm: Buffer) => { sent.push(pcm.length); return true; });
     vi.spyOn(console, 'log').mockImplementation(() => { });
@@ -124,8 +146,10 @@ describe('POST /call/test/play', () => {
     expect(r.code).toBe(200);
     expect(r.body.frames).toBe(5);
     expect(r.body.dropped).toBe(0);
-    expect(sent).toEqual(Array(5).fill(FRAME_BYTES));
+    expect(sent).toEqual(Array(5).fill(STEREO_FRAME_BYTES));           // 1280 B/goi, MOT goi moi 20 ms
     expect(r.body.ms).toBeGreaterThanOrEqual(80);
+    expect(r.body.stereo).toBe(true);
+    expect(r.body.frameBytes).toBe(1280);
   });
 
   it('file= thieu .wav -> van phat duoc: {file:"short"} = {file:"short.wav"}', async () => {
@@ -137,7 +161,7 @@ describe('POST /call/test/play', () => {
     expect(short.body.ok).toBe(true);
     expect(short.body.file).toBe('short.wav');                 // ten da chuan hoa (them .wav)
     expect(short.body.frames).toBe(5);
-    expect(sent).toEqual(Array(5).fill(FRAME_BYTES));
+    expect(sent).toEqual(Array(5).fill(STEREO_FRAME_BYTES));
     expect(log.mock.calls.map((c) => String(c[0])).find((s) => s.startsWith('[test] play'))).toContain('file=short.wav');
   });
 
@@ -151,28 +175,34 @@ describe('POST /call/test/play', () => {
     expect(r.body.agc).toBe(false);
     expect(r.body.eq).toBe(false);
     expect(sent.length).toBe(10);
+    expect(sent.every((n) => n === STEREO_FRAME_BYTES)).toBe(true);    // 10 goi, khong goi nao bi chia doi
     expect(r.body.ms).toBeGreaterThanOrEqual(180);
   });
 
-  it('agc=0&eq=0 -> PCM xuong loa Y NGUYEN BYTE tep mau (duong bypass)', async () => {
+  it('agc=0&eq=0 -> PCM xuong loa Y NGUYEN BYTE tep mau (sau khi bo kenh phai = mono goc)', async () => {
     const got: Buffer[] = [];
     vi.spyOn(broadcaster, 'sendAudioFrame').mockImplementation((_dev: string, pcm: Buffer) => { got.push(Buffer.from(pcm)); return true; });
     vi.spyOn(console, 'log').mockImplementation(() => { });
     await call('POST', `/call/test/play?dev=${DEV}&file=short.wav&agc=0&eq=0`);
-    const all = Buffer.concat(got);
-    expect(all.equals(wavPcm)).toBe(true);
-    expect(rms(all)).toBeGreaterThan(0.1);                 // co tieng that, khong phai im lang
+    const wire = Buffer.concat(got);                       // 5 goi x 1280 byte stereo = 6400 byte
+    expect(wire.length).toBe(wavPcm.length * 2);
+    const mono = stereoToMono(wire);                       // lay kenh trai -> phai trung byte voi tep mau
+    expect(mono.equals(wavPcm)).toBe(true);
+    expect(rms(mono)).toBeGreaterThan(0.1);                // co tieng that, khong phai im lang
+    expect(rms(wire)).toBeCloseTo(rms(mono), 6);           // nhan doi kenh KHONG doi muc (dBFS giu y nghia)
   });
 
-  it('agc=1 -> PCM khac tep mau (co xu ly) nhung KHONG im lang, khong doi kich thuoc goi', async () => {
+  it('agc=1 -> PCM khac tep mau (co xu ly) nhung KHONG im lang, do dai goi = 2x mono', async () => {
     const got: Buffer[] = [];
     vi.spyOn(broadcaster, 'sendAudioFrame').mockImplementation((_dev: string, pcm: Buffer) => { got.push(Buffer.from(pcm)); return true; });
     vi.spyOn(console, 'log').mockImplementation(() => { });
     await call('POST', `/call/test/play?dev=${DEV}&file=short.wav&agc=1&eq=0`);
-    const all = Buffer.concat(got);
-    expect(all.length).toBe(wavPcm.length);
-    expect(all.equals(wavPcm)).toBe(false);
-    expect(rms(all)).toBeGreaterThan(0.1);
+    const wire = Buffer.concat(got);
+    expect(wire.length).toBe(wavPcm.length * 2);           // stereo: 2 byte/mau/kenh
+    const mono = stereoToMono(wire);
+    expect(mono.length).toBe(wavPcm.length);
+    expect(mono.equals(wavPcm)).toBe(false);               // AGC co tac dung
+    expect(rms(mono)).toBeGreaterThan(0.1);
   });
 
   it('gain=-6 dB -> muc ra nho hon ~2 lan', async () => {
@@ -180,8 +210,34 @@ describe('POST /call/test/play', () => {
     vi.spyOn(broadcaster, 'sendAudioFrame').mockImplementation((_dev: string, pcm: Buffer) => { got.push(Buffer.from(pcm)); return true; });
     vi.spyOn(console, 'log').mockImplementation(() => { });
     await call('POST', `/call/test/play?dev=${DEV}&file=short.wav&agc=0&eq=0&gain=-6`);
-    const ratio = rms(Buffer.concat(got)) / rms(wavPcm);
+    const ratio = rms(stereoToMono(Buffer.concat(got))) / rms(wavPcm);
     expect(ratio).toBeCloseTo(0.5, 1);
+  });
+
+  it('A/B CCR_CALL_STEREO=0 -> gui MONO 640 B/goi nhu cu (van 20 ms/goi)', async () => {
+    vi.resetModules();                                     // doc env MOT lan luc khoi dong (nhu tien trinh that)
+    process.env.CCR_CALL_STEREO = '0';
+    const dm = await import('./deviceManager.js');
+    const off = await import('./callBridge.js');
+    const sent: number[] = [];
+    const spy = vi.spyOn(dm.broadcaster, 'sendAudioFrame').mockImplementation((_dev: string, pcm: Buffer) => { sent.push(pcm.length); return true; });
+    vi.spyOn(console, 'log').mockImplementation(() => { });
+    const r = await new Promise<{ code: number; body: any }>((ok) => {
+      const req = { socket: { remoteAddress: '127.0.0.1' }, method: 'POST', headers: {} } as unknown as http.IncomingMessage;
+      const res = {
+        writeHead: (code: number) => { status = code; },
+        end: (body: string) => { ok({ code: status, body: JSON.parse(body) }); },
+      } as unknown as http.ServerResponse;
+      let status = 0;
+      off.handleCallApi(req, res, new URL(`http://x/call/test/play?dev=${DEV}&file=short.wav&agc=0&eq=0`));
+    });
+    expect(r.code).toBe(200);
+    expect(r.body.frames).toBe(5);
+    expect(r.body.stereo).toBe(false);
+    expect(r.body.frameBytes).toBe(MONO_FRAME_BYTES);
+    expect(sent).toEqual(Array(5).fill(MONO_FRAME_BYTES));            // 640 B/goi nhu truoc 06/12/2026
+    expect(spy).toHaveBeenCalled();
+    delete process.env.CCR_CALL_STEREO;
   });
 
   it('man khong goi duoc -> 404; tep la -> 400; sai method -> 405', async () => {

@@ -1,4 +1,20 @@
 ## Sắp tới (chưa bump version)
+- **Sửa “nghe đứt quãng” trên loa P4: gửi STEREO (L = R) 1280 B/20 ms** (`src/audioStereo.ts`). Bằng chứng đo được
+  trên thiết bị: server gửi PCM **mono** 640 B (20 ms), nhưng log P4 cho thấy `Mixer Source Speaker ... num_channels: 2`,
+  “loa từ chối 201920–292800 B / 30 s”, “rơi ở hàng đợi 53–98 gói” ⇒ ring buffer loa **luôn đầy và bị vứt bớt**: 640 B
+  mono chỉ tương đương **10 ms stereo** nên phần “tiêu thụ” nhanh gấp đôi phần “đổ vào” ⇒ tràn ⇒ đứt quãng.
+  Nay `sendToSpeaker()` nhân đôi mỗi mẫu s16le sang 2 kênh **sau AGC, trước bộ đếm nhịp** (`src/callBridge.ts`):
+  **640 B mono vào → 1280 B stereo ra**, vẫn **20 ms/gói** (bộ đếm nhịp `src/audioPacer.ts` nhận `frameBytes` cấu hình
+  được: 640 cho web / 1280 cho màn, nhịp 20 ms không đổi — không gửi nhanh gấp đôi).
+  Đo mức `[audio] in/out` **giữ nguyên ý nghĩa** (dBFS tính trên mono trước khi nhân đôi) để so được với các lần trước.
+  Nhánh **điện thoại ↔ điện thoại giữ mono** như cũ (không đi qua `sendToSpeaker`).
+  Tắt để A/B bằng **`CCR_CALL_STEREO=0`** (mặc định `1` = bật; log khởi động `[audio] stereo=on frame=1280B/20ms`,
+  tắt: `[audio] stereo=off frame=640B/20ms`). Add-on có thêm tuỳ chọn **`call_stereo`** (mặc định `true`).
+  Bài đo `POST /call/test/play` cũng gửi 1280 B/20 ms (cùng hàm) và trả thêm `stereo`/`frameBytes`,
+  log `[test] play ... stereo=1 frame=1280 ...` để đối chiếu với log của P4.
+- Test: `src/audioStereo.test.ts` (dài ×2, L = R, mẫu âm/dương, mẫu biên −32768, buffer lẻ, env A/B, log khởi động),
+  `src/audioPacer.test.ts` (frameBytes = 1280: 1 gói/20 ms, 5 khung → 0/20/40/60/80 ms, không burst),
+  `src/callTestAudio.test.ts` (tích hợp: 1 khung mono 640 B → gói 1280 B; `CCR_CALL_STEREO=0` → 640 B).
 - **Tiếng gọi từ điện thoại xuống loa P4 to và đều hơn**: thêm **AGC + limiter** cho nhánh PCM điện thoại → màn
   (`src/audioAgc.ts`, gọi từ `sendToSpeaker`): mỗi khung 20 ms được đưa về **−18 dBFS** (attack 5 ms, release 200 ms,
   gain trong **[−6 dB, +24 dB]**), sau đó **limiter mềm −1 dBFS** để không rách tiếng khi nói to. Khung im lặng
@@ -12,6 +28,11 @@
   không còn bị gập tần số thành tiếng “xoẹt” rất to. Khung 320 mẫu / 20 ms và giao thức `[0x01][PCM]` giữ nguyên.
 - Test: `src/audioAgc.test.ts` (im lặng, khung nhỏ/khung lớn, attack/release, giới hạn gain, limiter −1 dBFS, tắt env
   → passthrough y nguyên byte, khung 20 ms vào 640 byte ra 640 byte).
+
+## V2.9.317
+- **Gửi PCM stereo (L=R) xuống màn**: mixer của P4 chạy 2 kênh nên trước đây nhận mono 640 B bị lệch tốc độ
+  ⇒ tràn buffer ⇒ vứt mẫu ⇒ nghe đứt quãng (`loa tu choi` 200–290 KB/30 s). Nay gửi 1280 B/20 ms, nhịp không đổi.
+  A/B bằng option **`call_stereo`** (mặc định bật).
 
 ## V2.9.316
 - Đóng gói **`test-audio/`** vào image (3 file WAV mẫu) để `POST /call/test/play` và `GET /call/test/files` hoạt động;

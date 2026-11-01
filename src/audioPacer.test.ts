@@ -160,3 +160,69 @@ describe('audioPacer — che do khong pace (A/B: CCR_CALL_PACE=0)', () => {
     expect(h.pacer.stats('p4')).toMatchObject({ frames: 3, dropped: 0 });
   });
 });
+
+// (06/12/2026) KHUNG 1280 BYTE = 20 ms STEREO (L = R) cho nhanh xuong loa man P4 (xem src/audioStereo.ts).
+// `frameBytes` chi doi viec CHIA goi: mot lan push 1280 byte = MOT goi, va van MOT goi moi 20 ms —
+// neu de `frameBytes` sai (640 trong khi nhan 1280) thi mot khung 20 ms bi chia thanh HAI goi va bo dem ban
+// hai goi moi nhip (gui nhanh gap doi) => day chinh la dieu phai tranh.
+describe('audioPacer — khung 1280 byte (20 ms stereo cho loa man)', () => {
+  const stereoFrame = (fill = 3): Buffer => Buffer.alloc(1280, fill);
+
+  it('mac dinh cua module van la 640 (web <-> web khong doi)', () => {
+    const h = harness();
+    expect(FRAME_BYTES).toBe(640);
+    expect(h.pacer.bytesPerFrame).toBe(FRAME_BYTES);
+  });
+
+  it('frameBytes=1280: mot lan push 1280 byte -> MOT goi 1280 byte (khong bi chia doi)', () => {
+    const h = harness({ frameBytes: 1280 });
+    expect(h.pacer.bytesPerFrame).toBe(1280);
+    h.pacer.push('p4', stereoFrame());
+    h.advance(100);
+    expect(h.sent).toEqual([{ at: 0, bytes: 1280 }]);
+    expect(h.pacer.stats('p4')).toEqual({ frames: 1, dropped: 0, queued: 0 });
+  });
+
+  it('frameBytes=1280: 5 khung push MOT LAN -> 0/20/40/60/80 ms, moi goi 1280 byte (KHONG bun no)', () => {
+    const h = harness({ frameBytes: 1280, maxQueueFrames: 5 });
+    for (let i = 0; i < 5; i++) h.pacer.push('p4', stereoFrame());
+    h.advance(300);
+    expect(h.sent.map((s) => s.at)).toEqual([0, 20, 40, 60, 80]);
+    expect(h.sent.every((s) => s.bytes === 1280)).toBe(true);
+    expect(h.pacer.stats('p4')).toEqual({ frames: 5, dropped: 0, queued: 0 });
+  });
+
+  it('frameBytes=1280: 20 khung den moi 20 ms -> 20 goi trong 400 ms (dung 1 goi/20 ms, toc do byte 2x nhung nhip khong doi)', () => {
+    const h = harness({ frameBytes: 1280, maxQueueFrames: 8 });
+    for (let k = 0; k < 20; k++) { h.pacer.push('p4', stereoFrame()); h.advance(20); }
+    h.advance(200);
+    const at = h.sent.map((s) => s.at).filter((v, i, a) => a.indexOf(v) === i);   // cac moc co gui
+    expect(at).toEqual([...Array(20)].map((_, i) => i * 20));                     // 0,20,...,380 ms
+    // Khong bao gio 2 goi trong CUNG mot moc 20 ms sau khi hang doi da on dinh (nhip 1 goi/nhip).
+    for (const t of at.slice(1)) expect(h.sent.filter((s) => s.at === t).length).toBe(1);
+    expect(h.sent.length).toBe(20);
+    expect(h.pacer.stats('p4').dropped).toBe(0);
+  });
+
+  it('frameBytes=1280: mot goi 40 ms (2560 byte) -> trai thanh 2 goi 1280 byte o 0 va 20 ms', () => {
+    const h = harness({ frameBytes: 1280 });
+    h.pacer.push('p4', Buffer.alloc(2560, 9));
+    h.advance(100);
+    expect(h.sent.map((s) => s.at)).toEqual([0, 20]);
+    expect(h.sent.every((s) => s.bytes === 1280)).toBe(true);
+  });
+
+  it('frameBytes=640 nhung nhan 1280 byte -> 2 goi/nhip (dung la cau hinh SAI phai tranh)', () => {
+    const h = harness({ frameBytes: 640 });
+    h.pacer.push('p4', stereoFrame());
+    h.advance(100);
+    expect(h.sent.map((s) => s.bytes)).toEqual([640, 640]);       // vi sao callBridge lay SPEAKER_FRAME_BYTES
+  });
+
+  it('frameBytes=1280 van giu tran hang doi tinh theo KHUNG (5 khung = 100 ms)', () => {
+    const h = harness({ frameBytes: 1280, maxQueueFrames: 5 });
+    for (let i = 0; i < 8; i++) h.pacer.push('p4', stereoFrame());
+    expect(h.pacer.stats('p4')).toMatchObject({ queued: 5, dropped: 3 });
+    expect(h.dropped).toEqual(['queue', 'queue', 'queue']);
+  });
+});
