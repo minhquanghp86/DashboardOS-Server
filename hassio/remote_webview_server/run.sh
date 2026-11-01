@@ -71,6 +71,7 @@ export CCR_CALL_AGC="$(get_opt call_agc "true")"
 # (06/12/2026) MONO -> STEREO (L = R) cho nhanh xuong LOA MAN (src/audioStereo.ts): mixer P4 khai 2 kenh nen goi
 # phai la 1280 B = 20 ms stereo. 'false' -> gui mono 640 B nhu cu (A/B).
 export CCR_CALL_STEREO="$(get_opt call_stereo "true")"
+export CCR_CALL_RATE8K="$(get_opt call_rate8k "false")"
 # (27/09/2026) Link album Google Photos chia se cho khung anh (chinh duoc ca o Cai dat tren man hinh).
 export GPHOTOS_ALBUM="$(get_opt gphotos_album "")"
 export USER_DATA_DIR="$(get_opt user_data_dir "/data/pw-data")"
