@@ -27,6 +27,14 @@ export interface Notice {
   image?: string;
   video?: string;
   audio?: string;
+  /**
+   * (14/06/2026) LUONG MJPEG cua camera (tu tham so `camera:` cua automation). Shell ve thang trong <img>
+   * (multipart/x-mixed-replace) -> VIDEO TRUC TIEP. Truoc day `camera:` chi doi ra `image:` (mot khung, khong
+   * tu cap nhat) nen man hinh chi hien anh chup tinh.
+   */
+  stream?: string;
+  /** (14/06/2026) Anh tinh du phong (poster) hien ngay trong khi cho khung dau cua `stream`, va khi luong loi. */
+  poster?: string;
   /** (19/10/2026) So giay hien thi thong bao truoc khi thu gon. */
   duration?: number;
   /** (01/10/2026) Tham so cho ung dung `app` khi cham (vd id cuoc tro chuyen cua Tin nhan). */
@@ -44,14 +52,64 @@ export const noticeKind = (n: Pick<Notice, 'app'>): 'chat' | 'nt' => (n.app === 
 export interface NotifyRequest {
   title?: unknown; message?: unknown; priority?: unknown; device?: unknown; app?: unknown; url?: unknown;
   image?: unknown; video?: unknown; audio?: unknown; camera?: unknown; duration?: unknown; arg?: unknown; missed?: unknown;
+  /** (14/06/2026) `stream` (mac dinh) = `camera:` thanh LUONG MJPEG; `snapshot` = mot anh tinh nhu truoc. */
+  camera_mode?: unknown;
 }
 
 const str = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
 /**
- * Kiem tra/chuan hoa yeu cau tu HA. Tra ve loi (chuoi) neu khong hop le. `go2rtc` = dia chi go2rtc de dung anh tu ten
+ * Kiem tra/chuan hoa yeu cau tu HA. Tra ve loi (chuoi) neu khong hop le. `go2rtc` = dia chi go2rtc de dung hinh tu ten
  * luong camera (truong `camera`).
+ *
+ * (14/06/2026) SUA LOI "man hinh chi hien anh chup tinh": truong `camera` truoc day doi ra `image` =
+ * `<go2rtc>/api/frame.jpeg?src=<ten>` — MOT khung JPEG, va the <img> cua Shell khong bao gio tai lai. Do that tren may
+ * that 22/11/2026 (P4 esp32-80f1b2d35fb5, camera ezviz): frame.jpeg mat 4,9 s/khung va chi 1 khung / 10 s toi man.
+ * Nay `camera` -> `stream` = `<go2rtc>/api/stream.mjpeg?src=<ten>` (multipart/x-mixed-replace): 11,8-12,1 khung/giay,
+ * khung dau sau 0,26-1,1 s. `image` van giu lam poster (hien ngay, thay the neu luong loi).
+ *
+ * Tuong thich nguoc:
+ *   - Automation cu chi gui `camera:` -> TU DONG thanh luong (khong phai sua gi).
+ *   - `camera_mode: snapshot` -> giu nguyen hanh vi cu (mot anh tinh) cho ai can.
  */
+/**
+ * (22/11/2026) Do that tren P4: `/go2rtc/api/stream.mjpeg?src=ezviz` cho **1,6 khung/giay** vi go2rtc phai
+ * giai ma + nen lai khung 1920x1080; them `&w=480&h=272` cho **12,0 khung/giay** (7,9 KB/khung). Vi vay moi man
+ * nhan mot URL MJPEG **da scale dung do phan giai cua no** — man 480x272/480x480/800x480/1024x600 khac nhau.
+ */
+export function streamForSize(base: string, src: string, w?: number, h?: number): string {
+  const url = `${base}/api/stream.mjpeg?src=${src}`;
+  if (!w || !h || !Number.isFinite(w) || !Number.isFinite(h) || w < 16 || h < 16) return url;
+  const sw = Math.min(1920, Math.round(w / 2) * 2), sh = Math.min(1080, Math.round(h / 2) * 2);
+  return `${url}&w=${sw}&h=${sh}`;
+}
+
+/** Poster (1 khung tinh) cung scale theo man, de khung dau khong phai giai ma anh 1080p tren ESP32. */
+export function posterForSize(base: string, src: string, w?: number, h?: number): string {
+  const url = `${base}/api/frame.jpeg?src=${src}`;
+  if (!w || !h || !Number.isFinite(w) || !Number.isFinite(h) || w < 16 || h < 16) return url;
+  return `${url}&w=${Math.round(w / 2) * 2}&h=${Math.round(h / 2) * 2}`;
+}
+
+/**
+ * (22/11/2026) Doi `stream`/`poster` cua MOT thong bao sang dung do phan giai cua man nhan.
+ * Ly do: go2rtc tra MJPEG 1,6 khung/giay o 1920x1080 nhung 12,0 khung/giay khi them `w/h` = kich thuoc man.
+ * Tra ve notice moi (khong sua ban goc trong lich su).
+ */
+export function scaleNoticeMedia<T extends { stream?: string; poster?: string }>(n: T, w?: number, h?: number): T {
+  if (!w || !h) return n;
+  const out = { ...n };
+  const srcOf = (u: string): string | null => {
+    try { const p = new URL(u); return p.searchParams.get('src'); } catch { return null; }
+  };
+  const baseOf = (u: string): string | null => {
+    try { const p = new URL(u); return `${p.origin}${p.pathname.replace(/\/api\/(stream\.mjpeg|frame\.jpeg)$/, '')}`; } catch { return null; }
+  };
+  if (out.stream) { const sr = srcOf(out.stream), b = baseOf(out.stream); if (sr && b) out.stream = streamForSize(b, sr, w, h); }
+  if (out.poster) { const sr = srcOf(out.poster), b = baseOf(out.poster); if (sr && b) out.poster = posterForSize(b, sr, w, h); }
+  return out;
+}
+
 export function parseNotify(body: NotifyRequest, go2rtc: string):
   { ok: true; device: string; notice: Omit<Notice, 'id' | 'ts'> } | { ok: false; error: string } {
   const title = str(body.title, 80), message = str(body.message, 300);
@@ -60,16 +118,25 @@ export function parseNotify(body: NotifyRequest, go2rtc: string):
   const priority: Priority = pr === 'urgent' ? 'urgent' : pr === 'high' || pr === 'critical' ? pr : 'normal';
   const url = str(body.url, 1024);
   if (url && !/^https?:\/\//i.test(url)) return { ok: false, error: 'url phai la http(s)' };
-  let image = str(body.image, 2048);
+  const image = str(body.image, 2048);
   if (image && !/^(https?:\/\/|\/notify\/media\/)/i.test(image)) return { ok: false, error: 'image phai la http(s) hoac /notify/media/...' };
   const video = str(body.video, 2048);
   if (video && !/^(https?:\/\/|\/notify\/media\/)/i.test(video)) return { ok: false, error: 'video phai la http(s) hoac /notify/media/...' };
   const audio = str(body.audio, 2048);
   if (audio && !/^(https?:\/\/|\/notify\/media\/)/i.test(audio)) return { ok: false, error: 'audio phai la http(s) hoac /notify/media/...' };
   const camera = str(body.camera, 64);
-  if (!image && camera) {
+  // (14/06/2026) `stream` (mac dinh) | `snapshot`. Gia tri la -> mac dinh `stream` (KHONG lam hong yeu cau cu).
+  const cameraMode = str(body.camera_mode, 12).toLowerCase() === 'snapshot' ? 'snapshot' : 'stream';
+  let stream = '', poster = '';
+  if (camera) {
     if (!/^[\w.-]+$/.test(camera)) return { ok: false, error: 'ten camera khong hop le' };
-    image = `${go2rtc.replace(/\/$/, '')}/api/frame.jpeg?src=${encodeURIComponent(camera)}`;
+    const base = go2rtc.replace(/\/$/, ''), name = encodeURIComponent(camera);
+    if (cameraMode === 'snapshot') {
+      poster = `${base}/api/frame.jpeg?src=${name}`;
+    } else {
+      stream = `${base}/api/stream.mjpeg?src=${name}`;
+      poster = `${base}/api/frame.jpeg?src=${name}`;
+    }
   }
   const durRaw = Number(body.duration);
   const duration = Number.isFinite(durRaw) && durRaw >= 0 ? Math.min(600, Math.round(durRaw)) : undefined;
@@ -78,7 +145,7 @@ export function parseNotify(body: NotifyRequest, go2rtc: string):
   return {
     ok: true,
     device: str(body.device, 64) || 'all',
-    notice: { title, message, priority, ...(body.missed === true ? { missed: true } : {}), ...(app ? { app } : {}), ...(arg ? { arg } : {}), ...(url ? { url } : {}), ...(image ? { image } : {}), ...(video ? { video } : {}), ...(audio ? { audio } : {}), ...(duration !== undefined ? { duration } : {}) },
+    notice: { title, message, priority, ...(body.missed === true ? { missed: true } : {}), ...(app ? { app } : {}), ...(arg ? { arg } : {}), ...(url ? { url } : {}), ...(image ? { image } : {}), ...(video ? { video } : {}), ...(audio ? { audio } : {}), ...(stream ? { stream } : {}), ...(poster ? { poster } : {}), ...(duration !== undefined ? { duration } : {}) },
   };
 }
 

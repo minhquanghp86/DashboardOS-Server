@@ -35,7 +35,7 @@ import { getToday, speakOnPanel } from "./todayData.js";
 import { parseDoorbell, unlockCall } from "./doorbell.js";
 import { ringtoneExists } from "./ringtone.js";
 import type { DialHooks } from "./dial.js";
-import { Notice, NoticeStore, NotifyRequest, noticeKind, parseNotify, shouldPopup, shouldWake } from "./notifications.js";
+import { Notice, NoticeStore, NotifyRequest, noticeKind, parseNotify, scaleNoticeMedia, shouldPopup, shouldWake } from "./notifications.js";
 import { Sound, soundForNotice, soundPrefs } from "./sound.js";
 import { alarms, type Ringing } from "./alarms.js";
 import { callService, getRegistry, getSettingsView, getStates, haReady, getStatusIcons, getPowerState } from "./haSettings.js";
@@ -1575,7 +1575,10 @@ alarms.hooks = {
 };
 /** Gon cho Shell: id, tieu de, noi dung, uu tien, thoi diem, anh, co hanh dong khi cham khong. */
 function noticeForShell(n: Notice) {
-  return { id: n.id, t: n.title, m: n.message, p: n.priority, ts: n.ts, img: n.image ?? null, vid: n.video ?? null, aud: n.audio ?? null, dur: n.duration ?? null, act: !!(n.app || n.url),
+  // (14/06/2026) `str` = luong MJPEG (tu tham so `camera:`), `pst` = anh tinh du phong. Shell ve <img src=str>
+  // (multipart) -> video truc tiep; truoc day chi co `img` (mot khung, khong tu cap nhat).
+  return { id: n.id, t: n.title, m: n.message, p: n.priority, ts: n.ts, img: n.image ?? null, vid: n.video ?? null, aud: n.audio ?? null,
+    str: n.stream ?? null, pst: n.poster ?? null, dur: n.duration ?? null, act: !!(n.app || n.url),
     s: !!n.seen, k: noticeKind(n), ...(n.missed ? { mc: 1 } : {}) };
 }
 
@@ -1588,7 +1591,11 @@ export function postNotify(body: NotifyRequest): { ok: boolean; error?: string; 
   if (!r.ok) return { ok: false, error: r.error };
   const targets = r.device === 'all' ? [...devices.keys()] : [r.device];
   for (const id of targets) {
-    const n = noticesOf(id).add(r.notice);
+    // (22/11/2026) Moi man nhan luong MJPEG SCALE dung do phan giai cua no: do that go2rtc tra 1,6 khung/giay
+    // o 1920x1080 nhung 12,0 khung/giay khi them w/h = kich thuoc man (P4 1024x600, S3 480x272/480x480/800x480).
+    const dsz = devices.get(id);
+    const scaled = scaleNoticeMedia(r.notice, dsz?.cfg.width, dsz?.cfg.height);
+    const n = noticesOf(id).add(scaled);
     const dev = devices.get(id);
     console.log(`[notify] ${id}: "${n.title || n.message}" (${n.priority})`);
     if (!dev) continue;

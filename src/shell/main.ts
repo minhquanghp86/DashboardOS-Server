@@ -19,6 +19,7 @@ import { classifyLockGesture } from './lockGesture';
 import { loadClockFont } from './clockFont';
 import { LwData, buildLockWidgets, lwModel } from './lockWidgets';
 import { SbData, dropPath, netIcon, powerIcons, sbKey } from './statusIcons';
+import { isFullMedia, overlayPlan } from '../cameraOverlay';
 import type { HomeLayout } from '../homeLayout';
 
 declare global { interface Window { [k: string]: any } }
@@ -63,6 +64,8 @@ interface DevState {
 interface AlarmInfo { id: string; l: string; t: string; sz: number; tm: boolean; beep?: boolean }
 /** s = da xem tren man hinh nay; k = loai (chat = tin nhan, nt = thong bao thuong). Server < 2.9.94 khong gui. */
 interface Notice { id: number; t: string; m: string; p: 'normal' | 'high' | 'critical' | 'urgent'; ts: number; img: string | null; vid: string | null; aud: string | null; dur: number | null; act: boolean;
+  /** (14/06/2026) LUONG MJPEG cua camera (`camera:` cua automation) + anh tinh du phong. Server cu khong gui -> undefined. */
+  str?: string | null; pst?: string | null;
   s?: boolean; k?: 'chat' | 'nt'; mc?: number }
 
 (function () {
@@ -934,15 +937,33 @@ interface Notice { id: number; t: string; m: string; p: 'normal' | 'high' | 'cri
     txt.appendChild(el('div', 'ov-t', n.t || n.m));
     if (n.t && n.m) txt.appendChild(el('div', 'ov-m', n.m));
     card.append(noticeIcon(n, 'ov-ic'), txt);
-    if (n.vid) {
-      const v = document.createElement('video'); v.className = 'ov-img'; v.src = n.vid;
+    // (14/06/2026) NGUON HINH: `str` (tu `camera:` cua automation) la LUONG MJPEG -> <img src=luong>; Chromium tu ve
+    // tung khung cua multipart/x-mixed-replace, KHONG can JavaScript, khong tai lai trang.
+    // Truoc day chi co `img` (mot khung /api/frame.jpeg): do that 22/11/2026 — 1 khung/10 s toi man, tuc anh dung im.
+    // Anh tinh (`img`/`pst`) giu lam POSTER: hien ngay trong khi cho khung dau (0,26-1,1 s) va khi luong loi.
+    const plan = overlayPlan(n);
+    if (plan.kind === 'stream') {
+      const im = el('img', 'ov-img'); im.alt = '';
+      // Poster: 1 khung tinh hien NGAY (khong doi mang). Luong dat sau nhe de khung dau ghi de poster.
+      if (plan.poster) { const p = el('img', 'ov-img ov-poster'); p.alt = ''; p.src = plan.poster; card.appendChild(p); }
+      const src = plan.src;
+      let tries = 0;
+      im.addEventListener('error', () => {
+        // Luong dut (camera khoi dong lai / Wi-Fi chap chon): thu lai co gian cach, giu poster trong luc cho.
+        if (++tries > 6 || !im.isConnected) return;
+        window.setTimeout(() => { if (im.isConnected) im.src = src + '&_r=' + tries; }, Math.min(4000, 500 * tries));
+      });
+      im.src = src;
+      card.appendChild(im);
+    } else if (plan.kind === 'video') {
+      const v = document.createElement('video'); v.className = 'ov-img'; v.src = plan.src;
       v.controls = true; v.autoplay = true; v.playsInline = true; v.muted = true; card.appendChild(v);
-    } else if (n.aud) {
-      const a = document.createElement('audio'); a.className = 'ov-aud'; a.src = n.aud; a.controls = true; a.autoplay = true;
+    } else if (plan.kind === 'audio') {
+      const a = document.createElement('audio'); a.className = 'ov-aud'; a.src = plan.src; a.controls = true; a.autoplay = true;
       card.appendChild(a);
-    } else if (n.img) { const im = el('img', 'ov-img'); im.src = n.img; card.appendChild(im); }
+    } else if (plan.kind === 'image') { const im = el('img', 'ov-img'); im.src = plan.src; card.appendChild(im); }
     // (30/10/2026) Thong bao co hinh (camera/anh/video): cho the phu TOAN MAN theo kich thuoc + goc xoay hien tai.
-    if (n.img || n.vid) card.classList.add('media-full');
+    if (isFullMedia(n)) card.classList.add('media-full');
     const row = el('div', 'ov-act');
     if (n.act) {
       const b = el('button', 'ov-btn', 'Mở');

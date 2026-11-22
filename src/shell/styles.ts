@@ -604,6 +604,10 @@ button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent
 .ov-card.media-full .ov-t { font-size: clamp(14px, 2.6vmin, 22px); color: #bef264; }
 .ov-card.media-full .ov-m { font-size: clamp(12px, 2.2vmin, 18px); color: #d9f99d; }
 .ov-card.media-full .ov-img { width: 100%; height: 100%; max-height: none; object-fit: contain; border-radius: 0; }
+/* (14/06/2026) Camera: anh tinh (poster) va luong MJPEG chong len nhau o CUNG mot o. Poster ve truoc (thay ngay),
+   luong dat SAU nen khung dau cua luong phu len poster; neu luong chua co khung thi van thay poster (khong man hinh den). */
+.ov-card.media-full .ov-poster { position: absolute; inset: 0; }
+.ov-card.media-full .ov-img:not(.ov-poster) { position: relative; }
 .ov-act { display: flex; gap: 12px; justify-content: flex-end; }
 .ov-btn { font: inherit; font-size: clamp(15px, 2.8vmin, 24px); padding: 10px 22px; border-radius: 999px; border: 0;
           background: #3b82f6; color: #fff; }

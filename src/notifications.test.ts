@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//
+import { NoticeStore, parseNotify, posterForSize, scaleNoticeMedia, shouldPopup, shouldWake, streamForSize } from "./notifications.js";
 // Copyright (c) 2026 minhquanghp86
 // Licensed under the Apache License, Version 2.0 (see LICENSE).
 
@@ -9,11 +9,13 @@ import { NoticeStore, parseNotify, shouldPopup, shouldWake } from "./notificatio
 const G = "http://127.0.0.1:1984";
 
 describe("POST /notify", () => {
-  it("chuan hoa: mac dinh normal + moi man hinh; camera -> anh go2rtc", () => {
+  it("chuan hoa: mac dinh normal + moi man hinh; camera -> stream MJPEG + poster", () => {
     const r = parseNotify({ title: " Chuông cửa ", message: "Có người ở cổng", priority: "critical", camera: "cong", app: "cams" }, G);
     expect(r).toEqual({ ok: true, device: "all", notice: {
       title: "Chuông cửa", message: "Có người ở cổng", priority: "critical", app: "cams",
-      image: "http://127.0.0.1:1984/api/frame.jpeg?src=cong" } });
+      // (01/11/2026) camera: -> MJPEG stream + poster tinh (anh go2rtc mot khung) lam du phong.
+      stream: "http://127.0.0.1:1984/api/stream.mjpeg?src=cong",
+      poster: "http://127.0.0.1:1984/api/frame.jpeg?src=cong" } });
     const n = parseNotify({ message: "x", priority: "khac", device: "esp32-80f1" }, G);
     expect(n.ok && n.notice.priority).toBe("normal");
     expect(n.ok && n.device).toBe("esp32-80f1");
@@ -79,5 +81,32 @@ describe('NoticeStore — da xem rieng tung man hinh (01/10/2026)', () => {
     expect(b.list()[0].seen).toBe(true);
     expect(b.add({ title: 'y', message: '', priority: 'normal' }).id).toBe(2);
     expect(saved).toBe(2);
+  });
+});
+
+describe("stream MJPEG scale theo do phan giai man (22/11/2026)", () => {
+  const B = "http://127.0.0.1:18080/go2rtc";
+  it("them w/h = kich thuoc man (do that: 1,6 -> 12,0 khung/giay)", () => {
+    expect(streamForSize(B, "ezviz", 480, 272)).toBe("http://127.0.0.1:18080/go2rtc/api/stream.mjpeg?src=ezviz&w=480&h=272");
+    expect(streamForSize(B, "ezviz", 1024, 600)).toBe("http://127.0.0.1:18080/go2rtc/api/stream.mjpeg?src=ezviz&w=1024&h=600");
+  });
+  it("khong co kich thuoc thi giu URL goc", () => {
+    expect(streamForSize(B, "ezviz")).toBe("http://127.0.0.1:18080/go2rtc/api/stream.mjpeg?src=ezviz");
+  });
+  it("poster cung scale", () => {
+    expect(posterForSize(B, "ezviz", 480, 272)).toBe("http://127.0.0.1:18080/go2rtc/api/frame.jpeg?src=ezviz&w=480&h=272");
+  });
+  it("scaleNoticeMedia doi stream + poster, giu nguyen truong khac", () => {
+    const n = scaleNoticeMedia({ title: "Camera", stream: `${B}/api/stream.mjpeg?src=ezviz`, poster: `${B}/api/frame.jpeg?src=ezviz` }, 480, 272);
+    expect(n.stream).toBe("http://127.0.0.1:18080/go2rtc/api/stream.mjpeg?src=ezviz&w=480&h=272");
+    expect(n.poster).toBe("http://127.0.0.1:18080/go2rtc/api/frame.jpeg?src=ezviz&w=480&h=272");
+    expect(n.title).toBe("Camera");
+  });
+  it("khong co w/h -> tra nguyen notice", () => {
+    const src = { stream: `${B}/api/stream.mjpeg?src=x` };
+    expect(scaleNoticeMedia(src).stream).toBe(src.stream);
+  });
+  it("URL khong phai go2rtc -> khong sua", () => {
+    expect(scaleNoticeMedia({ stream: "https://x/y.mjpg" }, 480, 272).stream).toBe("https://x/y.mjpg");
   });
 });
