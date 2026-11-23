@@ -947,6 +947,8 @@ interface Notice { id: number; t: string; m: string; p: 'normal' | 'high' | 'cri
       // Poster: 1 khung tinh hien NGAY (khong doi mang). Luong dat sau nhe de khung dau ghi de poster.
       if (plan.poster) { const p = el('img', 'ov-img ov-poster'); p.alt = ''; p.src = plan.poster; card.appendChild(p); }
       const src = plan.src;
+      // (22/11/2026) Khung DAU TIEN cua luong ve xong thi bo poster: khong con 2 lop anh chong nhau (nhin "roi").
+      im.addEventListener('load', () => { const pst = card.querySelector('.ov-poster'); if (pst) pst.remove(); }, { once: true });
       let tries = 0;
       im.addEventListener('error', () => {
         // Luong dut (camera khoi dong lai / Wi-Fi chap chon): thu lai co gian cach, giu poster trong luc cho.

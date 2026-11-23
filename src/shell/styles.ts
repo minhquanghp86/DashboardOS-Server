@@ -603,11 +603,13 @@ button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent
   background: linear-gradient(to bottom, rgba(0,0,0,0.88), rgba(0,0,0,0)); text-align: left; }
 .ov-card.media-full .ov-t { font-size: clamp(14px, 2.6vmin, 22px); color: #bef264; }
 .ov-card.media-full .ov-m { font-size: clamp(12px, 2.2vmin, 18px); color: #d9f99d; }
-.ov-card.media-full .ov-img { width: 100%; height: 100%; max-height: none; object-fit: contain; border-radius: 0; }
-/* (14/06/2026) Camera: anh tinh (poster) va luong MJPEG chong len nhau o CUNG mot o. Poster ve truoc (thay ngay),
-   luong dat SAU nen khung dau cua luong phu len poster; neu luong chua co khung thi van thay poster (khong man hinh den). */
-.ov-card.media-full .ov-poster { position: absolute; inset: 0; }
-.ov-card.media-full .ov-img:not(.ov-poster) { position: relative; }
+/* (22/11/2026) Camera TOAN MAN: poster (anh tinh) va luong MJPEG phai chong KHIT nhau.
+   Loi cu: poster dat absolute inset:0 (kin man) con luong dat relative height:100% -> trong flex column chieu cao
+   khong giai ra duoc nen luong ve theo kich thuoc tu nhien = KHUNG NHO de len anh tinh lon (nguoi dung thay "roi").
+   Nay CA HAI deu absolute inset:0 + object-fit: contain -> luong thay poster dung vi tri, khong thay doi bo cuc. */
+.ov-card.media-full .ov-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.ov-card.media-full .ov-poster { z-index: 0; }
+.ov-card.media-full .ov-img:not(.ov-poster) { z-index: 1; }
 .ov-act { display: flex; gap: 12px; justify-content: flex-end; }
 .ov-btn { font: inherit; font-size: clamp(15px, 2.8vmin, 24px); padding: 10px 22px; border-radius: 999px; border: 0;
           background: #3b82f6; color: #fff; }
