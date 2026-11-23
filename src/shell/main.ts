@@ -946,16 +946,17 @@ interface Notice { id: number; t: string; m: string; p: 'normal' | 'high' | 'cri
       const im = el('img', 'ov-img'); im.alt = '';
       // (23/11/2026) Dat style TRUC TIEP (khong chi dua vao CSS): tren P4 do that 23/11/2026 — luat CSS
       // `.ov-card.media-full .ov-img` khong ap vao <img> (khung ve theo kich thuoc tu nhien = anh nho giua man).
-      im.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:1;';
+      im.style.cssText = 'position:absolute!important;inset:0!important;width:100%!important;height:100%!important;'
+        + 'max-height:none!important;object-fit:contain!important;z-index:1!important;';
       // Poster: 1 khung tinh hien NGAY (khong doi mang). Luong dat sau nhe de khung dau ghi de poster.
+      // (23/11/2026) Poster dat lam BACKGROUND cua the thay vi mot <img> thu hai: chi con MOT lop anh,
+      // khong the "khung nho de len anh lon", va khi luong chua co khung thi van thay anh (khong man hinh den).
       if (plan.poster) {
-        const p = el('img', 'ov-img ov-poster'); p.alt = ''; p.src = plan.poster;
-        p.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:0;';
-        card.appendChild(p);
+        card.style.background = `#000 center/contain no-repeat url("${plan.poster}")`;
       }
       const src = plan.src;
       // (22/11/2026) Khung DAU TIEN cua luong ve xong thi bo poster: khong con 2 lop anh chong nhau (nhin "roi").
-      im.addEventListener('load', () => { const pst = card.querySelector('.ov-poster'); if (pst) pst.remove(); }, { once: true });
+      im.addEventListener('load', () => { card.style.background = '#000'; }, { once: true });
       let tries = 0;
       im.addEventListener('error', () => {
         // Luong dut (camera khoi dong lai / Wi-Fi chap chon): thu lai co gian cach, giu poster trong luc cho.

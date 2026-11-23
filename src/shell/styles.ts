@@ -607,9 +607,10 @@ button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent
    Loi cu: poster dat absolute inset:0 (kin man) con luong dat relative height:100% -> trong flex column chieu cao
    khong giai ra duoc nen luong ve theo kich thuoc tu nhien = KHUNG NHO de len anh tinh lon (nguoi dung thay "roi").
    Nay CA HAI deu absolute inset:0 + object-fit: contain -> luong thay poster dung vi tri, khong thay doi bo cuc. */
-.ov-card.media-full .ov-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
-.ov-card.media-full .ov-poster { z-index: 0; }
-.ov-card.media-full .ov-img:not(.ov-poster) { z-index: 1; }
+.ov-card.media-full .ov-img { position: absolute !important; inset: 0 !important; width: 100% !important;
+  height: 100% !important; max-height: none !important; object-fit: contain !important; border-radius: 0 !important; }
+.ov-card.media-full .ov-poster { z-index: 0 !important; }
+.ov-card.media-full .ov-img:not(.ov-poster) { z-index: 1 !important; }
 .ov-act { display: flex; gap: 12px; justify-content: flex-end; }
 .ov-btn { font: inherit; font-size: clamp(15px, 2.8vmin, 24px); padding: 10px 22px; border-radius: 999px; border: 0;
           background: #3b82f6; color: #fff; }
