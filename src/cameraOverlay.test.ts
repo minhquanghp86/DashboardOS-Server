@@ -26,8 +26,8 @@ describe("isFullMedia", () => {
 });
 
 describe("shouldFill — man vuong vs camera 16:9 (23/11/2026)", () => {
-  it("man vuong 480x480 + camera 16:9 -> lap kin (2 dai den qua lon)", () => {
-    expect(shouldFill({}, 480, 480, 16 / 9)).toBe(true);
+  it("man vuong 480x480 KHONG tu dong lap kin (giu contain nhu 2.9.330)", () => {
+    expect(shouldFill({}, 480, 480, 16 / 9)).toBe(false);
   });
   it("man 1024x600 (1,71) + camera 16:9 -> khong lap kin (lech it)", () => {
     expect(shouldFill({}, 1024, 600, 16 / 9)).toBe(false);
