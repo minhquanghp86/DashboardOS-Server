@@ -942,17 +942,21 @@ interface Notice { id: number; t: string; m: string; p: 'normal' | 'high' | 'cri
     // Truoc day chi co `img` (mot khung /api/frame.jpeg): do that 22/11/2026 — 1 khung/10 s toi man, tuc anh dung im.
     // Anh tinh (`img`/`pst`) giu lam POSTER: hien ngay trong khi cho khung dau (0,26-1,1 s) va khi luong loi.
     const plan = overlayPlan(n);
+    // (23/11/2026) Tinh `fill` TRUOC khi tao <img>: style inline co `!important` nen phai dat dung gia tri ngay,
+    // khong the sua sau bang class (inline !important thang CSS !important).
+    const fillMode = isFullMedia(n) && shouldFill(n, window.innerWidth, window.innerHeight, 16 / 9);
+    const fit = fillMode ? 'cover' : 'contain';
     if (plan.kind === 'stream') {
       const im = el('img', 'ov-img'); im.alt = '';
       // (23/11/2026) Dat style TRUC TIEP (khong chi dua vao CSS): tren P4 do that 23/11/2026 — luat CSS
       // `.ov-card.media-full .ov-img` khong ap vao <img> (khung ve theo kich thuoc tu nhien = anh nho giua man).
       im.style.cssText = 'position:absolute!important;inset:0!important;width:100%!important;height:100%!important;'
-        + 'max-height:none!important;object-fit:contain!important;z-index:1!important;';
+        + `max-height:none!important;object-fit:${fit}!important;z-index:1!important;`;
       // Poster: 1 khung tinh hien NGAY (khong doi mang). Luong dat sau nhe de khung dau ghi de poster.
       // (23/11/2026) Poster dat lam BACKGROUND cua the thay vi mot <img> thu hai: chi con MOT lop anh,
       // khong the "khung nho de len anh lon", va khi luong chua co khung thi van thay anh (khong man hinh den).
       if (plan.poster) {
-        card.style.background = `#000 center/contain no-repeat url("${plan.poster}")`;
+        card.style.background = `#000 center/${fit} no-repeat url("${plan.poster}")`;
       }
       const src = plan.src;
       // (22/11/2026) Khung DAU TIEN cua luong ve xong thi bo poster: khong con 2 lop anh chong nhau (nhin "roi").
@@ -981,7 +985,7 @@ interface Notice { id: number; t: string; m: string; p: 'normal' | 'high' | 'cri
       card.classList.add('media-full');
       // (23/11/2026) Man VUONG / ti le lech nhieu (480x480 + camera 16:9): lap kin khung cho do 2 dai den lon.
       // `fill` tu automation thang; khong co -> tu dong theo ti le man hinh hien tai.
-      if (shouldFill(n, window.innerWidth, window.innerHeight, 16 / 9)) card.classList.add('fill');
+      if (fillMode) card.classList.add('fill');
     }
     const row = el('div', 'ov-act');
     if (n.act) {
