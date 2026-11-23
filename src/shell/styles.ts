@@ -596,7 +596,9 @@ button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent
 .ov-img { width: 100%; max-height: 42vh; object-fit: contain; border-radius: 12px; }
 /* (30/10/2026) Thong bao co camera/anh: phu kin man hinh, anh giu dung ti le (khong meo), nen den lap vien. */
 .ov-card.media-full { width: 100%; height: 100%; max-height: none; border-radius: 0; padding: 0; box-sizing: border-box;
-  display: flex; flex-direction: column; justify-content: center; background: #000; overflow: hidden; }
+  display: flex; flex-direction: column; justify-content: center; background: #000; overflow: hidden;
+  /* (23/11/2026) Toan man: BO vien do (box-shadow cua the thong bao) — tren man 4.0 no hien thanh duong ke do. */
+  box-shadow: none !important; border: 0 !important; }
 /* (30/10/2026) Giu CHU tren anh: chi an icon + hang nut; tieu de/noi dung phu o day anh (nen gradient). */
 .ov-card.media-full .ov-ic, .ov-card.media-full .ov-act { display: none; }
 .ov-card.media-full .ov-txt { position: absolute; left: 0; right: 0; top: 0; padding: clamp(10px, 2.4vmin, 20px);
@@ -611,6 +613,9 @@ button:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent
   height: 100% !important; max-height: none !important; object-fit: contain !important; border-radius: 0 !important; }
 .ov-card.media-full .ov-poster { z-index: 0 !important; }
 .ov-card.media-full .ov-img:not(.ov-poster) { z-index: 1 !important; }
+/* (23/11/2026) Man VUONG (480x480) voi camera 16:9: contain de lai 2 dai den rat lon. Che do cover lap kin
+   (cat 2 mep) — bat bang tham so fill cua service hoac tu dong khi ti le man/camera lech > 1,4. */
+.ov-card.media-full.fill .ov-img, .ov-card.media-full.fill .ov-poster { object-fit: cover !important; }
 .ov-act { display: flex; gap: 12px; justify-content: flex-end; }
 .ov-btn { font: inherit; font-size: clamp(15px, 2.8vmin, 24px); padding: 10px 22px; border-radius: 999px; border: 0;
           background: #3b82f6; color: #fff; }

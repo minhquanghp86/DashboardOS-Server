@@ -19,7 +19,7 @@ import { classifyLockGesture } from './lockGesture';
 import { loadClockFont } from './clockFont';
 import { LwData, buildLockWidgets, lwModel } from './lockWidgets';
 import { SbData, dropPath, netIcon, powerIcons, sbKey } from './statusIcons';
-import { isFullMedia, overlayPlan } from '../cameraOverlay';
+import { isFullMedia, overlayPlan, shouldFill } from '../cameraOverlay';
 import type { HomeLayout } from '../homeLayout';
 
 declare global { interface Window { [k: string]: any } }
@@ -977,7 +977,12 @@ interface Notice { id: number; t: string; m: string; p: 'normal' | 'high' | 'cri
       card.appendChild(im);
     }
     // (30/10/2026) Thong bao co hinh (camera/anh/video): cho the phu TOAN MAN theo kich thuoc + goc xoay hien tai.
-    if (isFullMedia(n)) card.classList.add('media-full');
+    if (isFullMedia(n)) {
+      card.classList.add('media-full');
+      // (23/11/2026) Man VUONG / ti le lech nhieu (480x480 + camera 16:9): lap kin khung cho do 2 dai den lon.
+      // `fill` tu automation thang; khong co -> tu dong theo ti le man hinh hien tai.
+      if (shouldFill(n, window.innerWidth, window.innerHeight, 16 / 9)) card.classList.add('fill');
+    }
     const row = el('div', 'ov-act');
     if (n.act) {
       const b = el('button', 'ov-btn', 'Mở');

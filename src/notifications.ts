@@ -35,6 +35,8 @@ export interface Notice {
   stream?: string;
   /** (14/06/2026) Anh tinh du phong (poster) hien ngay trong khi cho khung dau cua `stream`, va khi luong loi. */
   poster?: string;
+  /** (23/11/2026) Lap kin khung (cover, cat 2 mep) thay vi letterbox. Bo trong = tu dong theo ti le man/camera. */
+  fill?: boolean;
   /** (19/10/2026) So giay hien thi thong bao truoc khi thu gon. */
   duration?: number;
   /** (01/10/2026) Tham so cho ung dung `app` khi cham (vd id cuoc tro chuyen cua Tin nhan). */
@@ -127,6 +129,9 @@ export function parseNotify(body: NotifyRequest, go2rtc: string):
   const camera = str(body.camera, 64);
   // (14/06/2026) `stream` (mac dinh) | `snapshot`. Gia tri la -> mac dinh `stream` (KHONG lam hong yeu cau cu).
   const cameraMode = str(body.camera_mode, 12).toLowerCase() === 'snapshot' ? 'snapshot' : 'stream';
+  // (23/11/2026) `fill`: lap kin khung (cover). Khong gui = tu dong (xem cameraOverlay.shouldFill).
+  const fillRaw = (body as { fill?: unknown }).fill;
+  const fill = fillRaw === undefined || fillRaw === null ? undefined : (fillRaw === true || fillRaw === 'true' || fillRaw === '1');
   let stream = '', poster = '';
   if (camera) {
     if (!/^[\w.-]+$/.test(camera)) return { ok: false, error: 'ten camera khong hop le' };
@@ -145,7 +150,7 @@ export function parseNotify(body: NotifyRequest, go2rtc: string):
   return {
     ok: true,
     device: str(body.device, 64) || 'all',
-    notice: { title, message, priority, ...(body.missed === true ? { missed: true } : {}), ...(app ? { app } : {}), ...(arg ? { arg } : {}), ...(url ? { url } : {}), ...(image ? { image } : {}), ...(video ? { video } : {}), ...(audio ? { audio } : {}), ...(stream ? { stream } : {}), ...(poster ? { poster } : {}), ...(duration !== undefined ? { duration } : {}) },
+    notice: { title, message, priority, ...(body.missed === true ? { missed: true } : {}), ...(app ? { app } : {}), ...(arg ? { arg } : {}), ...(url ? { url } : {}), ...(image ? { image } : {}), ...(video ? { video } : {}), ...(audio ? { audio } : {}), ...(stream ? { stream } : {}), ...(poster ? { poster } : {}), ...(fill !== undefined ? { fill } : {}), ...(duration !== undefined ? { duration } : {}) },
   };
 }
 

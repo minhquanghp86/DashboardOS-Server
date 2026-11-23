@@ -1578,7 +1578,7 @@ function noticeForShell(n: Notice) {
   // (14/06/2026) `str` = luong MJPEG (tu tham so `camera:`), `pst` = anh tinh du phong. Shell ve <img src=str>
   // (multipart) -> video truc tiep; truoc day chi co `img` (mot khung, khong tu cap nhat).
   return { id: n.id, t: n.title, m: n.message, p: n.priority, ts: n.ts, img: n.image ?? null, vid: n.video ?? null, aud: n.audio ?? null,
-    str: n.stream ?? null, pst: n.poster ?? null, dur: n.duration ?? null, act: !!(n.app || n.url),
+    str: n.stream ?? null, pst: n.poster ?? null, fill: n.fill ?? null, dur: n.duration ?? null, act: !!(n.app || n.url),
     s: !!n.seen, k: noticeKind(n), ...(n.missed ? { mc: 1 } : {}) };
 }
 

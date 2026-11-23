@@ -32,6 +32,8 @@ export interface OverlayMedia {
   str?: string | null;
   /** Anh tinh du phong khi luong loi (poster). */
   pst?: string | null;
+  /** (23/11/2026) Lap kin khung (cat 2 mep) thay vi letterbox — cho man vuong 480x480 voi camera 16:9. */
+  fill?: boolean | null;
 }
 
 export type OverlayPlan =
@@ -57,6 +59,21 @@ export function overlayPlan(m: OverlayMedia): OverlayPlan {
   if (img) return { kind: 'image', src: img };
   if (pst) return { kind: 'image', src: pst };
   return { kind: 'none' };
+}
+
+/**
+ * (23/11/2026) Co nen LAP KIN khung (cover) khong:
+ *  - tham so `fill` cua automation dat true/false -> theo dung y nguoi dung;
+ *  - khong dat -> TU DONG khi ti le man/m camera lech nhieu (man vuong 480x480 + camera 16:9 => 2 dai den rat lon).
+ * `camAspect` = chieu rong/cao cua khung hinh camera (16/9 = 1,78).
+ */
+export function shouldFill(m: OverlayMedia, screenW?: number, screenH?: number, camAspect?: number): boolean {
+  if (m.fill === true) return true;
+  if (m.fill === false) return false;
+  if (!screenW || !screenH) return false;
+  const a = camAspect && camAspect > 0.2 ? camAspect : 16 / 9;
+  const scr = screenW / screenH;
+  return Math.abs(Math.log(scr / a)) > Math.log(1.4);
 }
 
 /** Lop thong bao co phu TOAN MAN khong (co hinh). */

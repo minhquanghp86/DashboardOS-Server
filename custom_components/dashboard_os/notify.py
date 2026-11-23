@@ -37,6 +37,8 @@ SERVICE_SCHEMA = vol.Schema(
         vol.Optional("audio"): cv.string,
         vol.Optional("camera"): cv.string,
         vol.Optional("camera_stream"): cv.string,
+        # (23/11/2026) Lap kin khung (cover, cat 2 mep) thay vi letterbox — huu ich cho man vuong 480x480.
+        vol.Optional("fill"): cv.boolean,
         vol.Optional("priority", default="urgent"): vol.In(["urgent", "critical", "high", "normal"]),
     }
 )
@@ -137,6 +139,8 @@ class DashboardOSNotify(NotifyEntity):
             }
             if camera:
                 payload["camera"] = camera
+            if (fill := data.get("fill")) is not None:
+                payload["fill"] = bool(fill)
             try:
                 async with session.post(
                     f"{self._base}/notify",
