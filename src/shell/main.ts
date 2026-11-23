@@ -944,8 +944,15 @@ interface Notice { id: number; t: string; m: string; p: 'normal' | 'high' | 'cri
     const plan = overlayPlan(n);
     if (plan.kind === 'stream') {
       const im = el('img', 'ov-img'); im.alt = '';
+      // (23/11/2026) Dat style TRUC TIEP (khong chi dua vao CSS): tren P4 do that 23/11/2026 — luat CSS
+      // `.ov-card.media-full .ov-img` khong ap vao <img> (khung ve theo kich thuoc tu nhien = anh nho giua man).
+      im.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:1;';
       // Poster: 1 khung tinh hien NGAY (khong doi mang). Luong dat sau nhe de khung dau ghi de poster.
-      if (plan.poster) { const p = el('img', 'ov-img ov-poster'); p.alt = ''; p.src = plan.poster; card.appendChild(p); }
+      if (plan.poster) {
+        const p = el('img', 'ov-img ov-poster'); p.alt = ''; p.src = plan.poster;
+        p.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:0;';
+        card.appendChild(p);
+      }
       const src = plan.src;
       // (22/11/2026) Khung DAU TIEN cua luong ve xong thi bo poster: khong con 2 lop anh chong nhau (nhin "roi").
       im.addEventListener('load', () => { const pst = card.querySelector('.ov-poster'); if (pst) pst.remove(); }, { once: true });
@@ -963,7 +970,11 @@ interface Notice { id: number; t: string; m: string; p: 'normal' | 'high' | 'cri
     } else if (plan.kind === 'audio') {
       const a = document.createElement('audio'); a.className = 'ov-aud'; a.src = plan.src; a.controls = true; a.autoplay = true;
       card.appendChild(a);
-    } else if (plan.kind === 'image') { const im = el('img', 'ov-img'); im.src = plan.src; card.appendChild(im); }
+    } else if (plan.kind === 'image') {
+      const im = el('img', 'ov-img'); im.src = plan.src;
+      im.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;object-fit:contain;';
+      card.appendChild(im);
+    }
     // (30/10/2026) Thong bao co hinh (camera/anh/video): cho the phu TOAN MAN theo kich thuoc + goc xoay hien tai.
     if (isFullMedia(n)) card.classList.add('media-full');
     const row = el('div', 'ov-act');
